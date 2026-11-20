@@ -232,6 +232,10 @@ summary{cursor:pointer;font-weight:600;font-size:13px}
       <div><label>“Near me” radius (miles)</label><input id="sRadius" inputmode="numeric"></div>
       <div><label>State for alerts &amp; crime</label><input id="sState" maxlength="2" style="text-transform:uppercase"></div>
     </div>
+    <label for="sRelay">Relay URL: needed for military aircraft, emergency squawks and the full world map</label>
+    <input id="sRelay" placeholder="https://overwatch-relay.yourname.workers.dev" autocomplete="off" inputmode="url">
+    <div class="btnrow"><button class="btn" id="btnTestRelay">Test relay</button><a class="btn" href="https://github.com/timothybrinkman/overwatch#relay-setup" target="_blank" rel="noopener">How to set it up</a></div>
+    <div class="hint" id="relayHint">The aircraft feeds don’t let web pages read them directly. A free Cloudflare relay you own fixes that, and setup takes about 5 minutes.</div>
     <label>Watchlist — callsign starts with, type code, or hex (comma separated)</label>
     <input id="sWatch" placeholder="e.g. RCH, SAM, COBRA, B52">
     <div class="hint">Matches get a yellow ring on the map and an alert when they enter your radius.</div>
@@ -329,6 +333,16 @@ async function firstOk(urls, opts) {
   for (const u of urls) { try { return {data: await getJSON(u, opts), url: u}; } catch (e) { last = e; } }
   throw last || new Error('No source');
 }
+// Feeds that refuse direct browser requests go through the user's own relay (Cloudflare Worker).
+const NEEDS_RELAY = 'This feed blocks web pages. Set up the free relay in Settings.';
+const relayBase = () => (cfg.relay || '').trim().replace(/\/+$/, '');
+const relayUrl = u => relayBase() ? `${relayBase()}/?url=${encodeURIComponent(u)}` : null;
+const realSource = u => { try { const q = new URL(u).searchParams.get('url'); return q ? host(q) + ' via relay' : host(u); } catch { return host(u); } };
+async function viaRelay(urls) {
+  const list = relayBase() ? urls.map(relayUrl).concat(urls) : urls;
+  try { const r = await firstOk(list); r.src = realSource(r.url); return r; }
+  catch (e) { if (!relayBase()) throw new Error(NEEDS_RELAY); throw new Error('Relay couldn’t reach the feeds: ' + e.message); }
+}
 // GDELT asks for at most one request every 5 seconds
 let gChain = Promise.resolve(), gLast = 0;
 function gdelt(url) {
@@ -348,6 +362,7 @@ const DEFAULTS = {
   radius: 300, state: 'NE',
   agencies: [{ori: 'NB0710100', name: 'Columbus PD'}, {ori: 'NB0710000', name: 'Platte Co. Sheriff'}],
   dataGovKey: '', aiKey: '', model: 'claude-haiku-5-5',
+  relay: '',
   watch: '',
   worldQuery: '(airstrike OR "missile strike" OR explosion OR shelling OR "drone strike" OR "terror attack" OR "mass shooting" OR coup OR "armed clash")',
   localQuery: '(Columbus OR "Platte County") Nebraska (police OR sheriff OR arrested OR charged OR shooting OR assault OR theft OR crash)',
@@ -519,7 +534,7 @@ function toast(msg, color = '#ef4444') {
 
 /* ============ loaders ============ */
 async function loadMil() {
-  const {data, url} = await firstOk(['https://api.adsb.lol/v2/mil', 'https://api.airplanes.live/v2/mil', 'https://opendata.adsb.fi/api/v2/mil']);
+  const {data, src: milSrc} = await viaRelay(['https://api.adsb.lol/v2/mil', 'https://api.airplanes.live/v2/mil', 'https://opendata.adsb.fi/api/v2/mil']);
   const raw = (data.ac || data.aircraft || []).filter(a => isFinite(a.lat) && isFinite(a.lon));
   const wt = watchTokens();
   S.milList = raw.map(a => {
@@ -536,7 +551,7 @@ async function loadMil() {
       watch: wt.some(x => call.toUpperCase().startsWith(x) || t === x || hex.toUpperCase() === x)
     };
   });
-  S.milSrc = host(url);
+  S.milSrc = milSrc;
   renderMil();
   // watchlist alerts inside radius
   const inNow = new Set();
@@ -592,10 +607,10 @@ async function loadSqk() {
   let src = '', fails = 0;
   for (const code of ['7500', '7600', '7700']) {
     try {
-      const {data, url} = await firstOk([`https://api.adsb.lol/v2/sqk/${code}`, `https://api.airplanes.live/v2/squawk/${code}`, `https://opendata.adsb.fi/api/v2/sqk/${code}`]);
-      src = host(url);
-      (data.ac || data.aircraft || []).forEach(a => { if (isFinite(a.lat) && isFinite(a.lon) && String(a.squawk) === code) all.push(a); });
-    } catch (e) { fails++; if (fails === 3) throw e; }
+      const r = await viaRelay([`https://api.adsb.lol/v2/sqk/${code}`, `https://api.airplanes.live/v2/squawk/${code}`, `https://opendata.adsb.fi/api/v2/sqk/${code}`]);
+      src = r.src;
+      (r.data.ac || r.data.aircraft || []).forEach(a => { if (isFinite(a.lat) && isFinite(a.lon) && String(a.squawk) === code) all.push(a); });
+    } catch (e) { if (e.message === NEEDS_RELAY) throw e; fails++; if (fails === 3) throw e; }
   }
   S.sqkList = all.map(a => {
     const p = {lat: +a.lat, lon: +a.lon}; const t = String(a.t || '').toUpperCase();
@@ -699,22 +714,86 @@ function linksFromHtml(html) {
   return $$('a', d).map(a => ({href: a.getAttribute('href') || '', text: (a.textContent || a.getAttribute('title') || '').trim()}))
     .filter(x => /^https?:\/\//.test(x.href) && x.text).slice(0, 6);
 }
-async function loadWorld() {
-  const q = encodeURIComponent(cfg.worldQuery);
-  const d = await gdelt(`https://api.gdeltproject.org/api/v2/geo/geo?query=${q}&mode=PointData&format=GeoJSON&maxpoints=250`);
-  S.world = (d.features || []).map(f => {
-    const c = f.geometry && f.geometry.coordinates; if (!c) return null;
-    const p = f.properties || {};
-    return {name: p.name || 'Location', count: +p.count || 1, links: linksFromHtml(p.html), lat: c[1], lon: c[0]};
-  }).filter(x => x && isFinite(x.lat));
+// Places matched in headline text when GDELT's map API isn't reachable. Cities before countries.
+const GAZ = [
+  ['Kyiv|Kiev', 'Kyiv, Ukraine', 50.45, 30.52], ['Kharkiv', 'Kharkiv, Ukraine', 49.99, 36.23], ['Odesa|Odessa', 'Odesa, Ukraine', 46.48, 30.73],
+  ['Zaporizhzhia', 'Zaporizhzhia, Ukraine', 47.84, 35.14], ['Dnipro', 'Dnipro, Ukraine', 48.46, 35.05], ['Donetsk|Donbas|Pokrovsk', 'Donbas, Ukraine', 48.0, 37.8],
+  ['Kherson', 'Kherson, Ukraine', 46.64, 32.61], ['Sumy', 'Sumy, Ukraine', 50.91, 34.8], ['Crimea|Sevastopol', 'Crimea', 44.95, 34.1],
+  ['Belgorod', 'Belgorod, Russia', 50.6, 36.6], ['Kursk', 'Kursk, Russia', 51.73, 36.19], ['Moscow|Kremlin', 'Moscow, Russia', 55.75, 37.62],
+  ['Gaza|Rafah|Khan Younis|Hamas', 'Gaza', 31.42, 34.35], ['West Bank|Jenin|Ramallah|Nablus|Hebron', 'West Bank', 32.0, 35.25],
+  ['Jerusalem', 'Jerusalem', 31.77, 35.21], ['Tel Aviv', 'Tel Aviv, Israel', 32.08, 34.78], ['Beirut|Hezbollah', 'Beirut, Lebanon', 33.89, 35.5],
+  ['Damascus', 'Damascus, Syria', 33.51, 36.29], ['Aleppo', 'Aleppo, Syria', 36.2, 37.16], ['Idlib', 'Idlib, Syria', 35.93, 36.63],
+  ['Baghdad', 'Baghdad, Iraq', 33.31, 44.36], ['Tehran', 'Tehran, Iran', 35.69, 51.39], ['Sanaa|Houthis?', 'Sanaa, Yemen', 15.37, 44.19],
+  ['Red Sea|Bab el-Mandeb', 'Red Sea', 20.0, 38.5], ['Khartoum|Omdurman', 'Khartoum, Sudan', 15.5, 32.56], ['Darfur|El[ -]Fasher', 'Darfur, Sudan', 13.63, 25.35],
+  ['Mogadishu|al[ -]Shabaab', 'Mogadishu, Somalia', 2.05, 45.32], ['Goma|M23', 'Goma, DR Congo', -1.68, 29.22], ['Kabul|Taliban', 'Kabul, Afghanistan', 34.53, 69.17],
+  ['Karachi', 'Karachi, Pakistan', 24.86, 67.0], ['Peshawar|Khyber', 'Peshawar, Pakistan', 34.01, 71.58], ['Balochistan|Quetta', 'Balochistan, Pakistan', 30.18, 66.99],
+  ['Kashmir|Srinagar', 'Kashmir', 34.08, 74.8], ['Manipur', 'Manipur, India', 24.8, 93.94], ['Port-au-Prince', 'Port-au-Prince, Haiti', 18.59, -72.31],
+  ['Caracas', 'Caracas, Venezuela', 10.48, -66.9], ['Sinaloa|Culiac[aá]n', 'Sinaloa, Mexico', 24.8, -107.39], ['Taiwan Strait|Taipei', 'Taiwan', 25.03, 121.56],
+  ['Pyongyang', 'Pyongyang, North Korea', 39.04, 125.76], ['Seoul', 'Seoul, South Korea', 37.57, 126.98], ['Istanbul', 'Istanbul, Turkey', 41.01, 28.98],
+  ['South Sudan|Juba', 'South Sudan', 6.88, 31.31], ['Sudan|Sudanese', 'Sudan', 12.86, 30.22], ['Ukraine|Ukrainian', 'Ukraine', 48.38, 31.17],
+  ['Russia|Russian', 'Russia', 55.0, 38.0], ['Israel|Israeli|IDF', 'Israel', 31.05, 34.85], ['Lebanon|Lebanese', 'Lebanon', 33.85, 35.86],
+  ['Syria|Syrian', 'Syria', 34.8, 38.99], ['Iraq|Iraqi', 'Iraq', 33.22, 43.68], ['Iran|Iranian', 'Iran', 32.43, 53.69], ['Yemen|Yemeni', 'Yemen', 15.55, 48.52],
+  ['Saudi', 'Saudi Arabia', 23.89, 45.08], ['Jordan', 'Jordan', 30.59, 36.24], ['Egypt|Egyptian', 'Egypt', 26.82, 30.8], ['Libya|Libyan', 'Libya', 26.34, 17.23],
+  ['Tunisia', 'Tunisia', 33.89, 9.54], ['Algeria', 'Algeria', 28.03, 1.66], ['Morocco', 'Morocco', 31.79, -7.09], ['Ethiopia|Ethiopian', 'Ethiopia', 9.15, 40.49],
+  ['Eritrea', 'Eritrea', 15.18, 39.78], ['Somalia|Somali', 'Somalia', 5.15, 46.2], ['Kenya|Kenyan', 'Kenya', -0.02, 37.91], ['Uganda', 'Uganda', 1.37, 32.29],
+  ['Nigeria|Nigerian', 'Nigeria', 9.08, 8.68], ['Niger', 'Niger', 17.61, 8.08], ['Mali|Malian', 'Mali', 17.57, -4.0], ['Burkina Faso', 'Burkina Faso', 12.24, -1.56],
+  ['Chad', 'Chad', 15.45, 18.73], ['Cameroon', 'Cameroon', 7.37, 12.35], ['Central African Republic', 'Central African Republic', 6.61, 20.94],
+  ['Congo|Congolese|DRC', 'DR Congo', -4.04, 21.76], ['Mozambique', 'Mozambique', -18.67, 35.53], ['Rwanda', 'Rwanda', -1.94, 29.87], ['Afghanistan|Afghan', 'Afghanistan', 33.94, 67.71],
+  ['Pakistan|Pakistani', 'Pakistan', 30.38, 69.35], ['India|Indian', 'India', 22.0, 78.96], ['Bangladesh|Bangladeshi', 'Bangladesh', 23.68, 90.36], ['Myanmar|Burma|Burmese', 'Myanmar', 21.91, 95.96],
+  ['Thailand|Thai', 'Thailand', 15.87, 100.99], ['Cambodia', 'Cambodia', 12.57, 104.99], ['Philippines|Filipino', 'Philippines', 12.88, 121.77], ['Indonesia|Indonesian', 'Indonesia', -2.5, 118.0],
+  ['China|Chinese|Beijing', 'China', 35.0, 105.0], ['Taiwan', 'Taiwan', 23.7, 120.96], ['North Korea', 'North Korea', 40.34, 127.51], ['South Korea', 'South Korea', 35.91, 127.77],
+  ['Japan|Japanese', 'Japan', 36.2, 138.25], ['Turkey|Türkiye|Turkish', 'Turkey', 38.96, 35.24], ['Armenia|Armenian', 'Armenia', 40.07, 45.04], ['Azerbaijan|Azerbaijani', 'Azerbaijan', 40.14, 47.58],
+  ['Venezuela|Venezuelan', 'Venezuela', 6.42, -66.59], ['Colombia|Colombian', 'Colombia', 4.57, -74.3], ['Ecuador|Ecuadorian', 'Ecuador', -1.83, -78.18], ['Peru|Peruvian', 'Peru', -9.19, -75.02],
+  ['Brazil|Brazilian', 'Brazil', -14.24, -51.93], ['Mexico|Mexican|cartel', 'Mexico', 23.63, -102.55], ['Haiti|Haitian', 'Haiti', 18.97, -72.29], ['Cuba|Cuban', 'Cuba', 21.52, -77.78],
+  ['Serbia|Serbian', 'Serbia', 44.02, 21.01], ['Kosovo', 'Kosovo', 42.6, 20.9], ['Poland|Polish', 'Poland', 51.92, 19.15], ['Belarus|Belarusian', 'Belarus', 53.71, 27.95],
+  ['Moldova', 'Moldova', 47.41, 28.37], ['Germany|German|Berlin', 'Germany', 51.17, 10.45], ['France|French|Paris', 'France', 46.23, 2.21],
+  ['Britain|British|London|U\\.K\\.', 'United Kingdom', 52.5, -1.5], ['Sweden', 'Sweden', 60.13, 18.64], ['Spain', 'Spain', 40.46, -3.75], ['Italy', 'Italy', 41.87, 12.57],
+  ['Greece', 'Greece', 39.07, 21.82], ['Australia', 'Australia', -25.27, 133.78], ['Canada', 'Canada', 56.13, -106.35]
+].map(([p, label, lat, lon]) => ({re: new RegExp('(^|[^A-Za-z])(' + p + ')(?![A-Za-z])', 'i'), label, lat, lon}));
+function geocodeHeadlines(arts) {
+  const groups = new Map();
+  for (const a of arts) {
+    const title = String(a.title || '').trim(); if (!title) continue;
+    const hit = GAZ.find(g => g.re.test(title)); if (!hit) continue;
+    let g = groups.get(hit.label);
+    if (!g) groups.set(hit.label, g = {name: hit.label, count: 0, links: [], lat: hit.lat, lon: hit.lon, approx: true});
+    g.count++;
+    if (g.links.length < 6 && !g.links.some(l => l.text === title)) g.links.push({href: a.url, text: title});
+  }
+  return [...groups.values()];
+}
+function renderWorld() {
   G.world.clearLayers(); S.worldMarkers = [];
   for (const w of S.world) {
     const m = L.circleMarker([w.lat, w.lon], {radius: Math.min(16, 4 + Math.log2(w.count + 1) * 2.2), color: '#a78bfa', weight: 1, fillColor: '#a78bfa', fillOpacity: .3})
-      .bindPopup(`<div class="pop"><div class="pt"><span class="tag" style="background:#a78bfa">${w.count} reports</span></div><div style="font-weight:600;margin-top:4px">${esc(w.name)}</div>
+      .bindPopup(`<div class="pop"><div class="pt"><span class="tag" style="background:#a78bfa">${w.count} ${w.approx ? 'headline' : 'report'}${w.count === 1 ? '' : 's'}</span></div><div style="font-weight:600;margin-top:4px">${esc(w.name)}</div>
+      ${w.approx ? '<div class="pg">Approximate location, based on the headlines</div>' : ''}
       <div style="margin-top:6px">${w.links.map(l => `<div style="margin-bottom:4px"><a href="${esc(l.href)}" target="_blank" rel="noopener">${esc(l.text)}</a></div>`).join('') || '<span class="muted">No article links</span>'}</div></div>`, {maxWidth: 290}).addTo(G.world);
     w.marker = m;
   }
-  setStatus('world', true, {count: S.world.length, src: 'api.gdeltproject.org'});
+}
+async function loadWorld() {
+  const q = encodeURIComponent(cfg.worldQuery);
+  if (relayBase()) {
+    try {
+      const d = await gdelt(relayUrl(`https://api.gdeltproject.org/api/v2/geo/geo?query=${q}&mode=PointData&format=GeoJSON&maxpoints=250`));
+      const pts = (d.features || []).map(f => {
+        const c = f.geometry && f.geometry.coordinates; if (!c) return null;
+        const p = f.properties || {};
+        return {name: p.name || 'Location', count: +p.count || 1, links: linksFromHtml(p.html), lat: c[1], lon: c[0]};
+      }).filter(x => x && isFinite(x.lat));
+      if (pts.length) {
+        S.world = pts; renderWorld();
+        setStatus('world', true, {count: S.world.length, src: 'GDELT map via relay'});
+        return;
+      }
+    } catch (e) { console.warn('GDELT map via relay failed, using headlines', e); }
+  }
+  // Works without the relay: pull the last day's English headlines and place them by the country or city they name.
+  const d = await gdelt(`https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(cfg.worldQuery + ' sourcelang:english')}&mode=ArtList&format=json&maxrecords=250&sort=DateDesc&timespan=24h`);
+  S.world = geocodeHeadlines(d.articles || []);
+  renderWorld();
+  setStatus('world', true, {count: S.world.length, src: 'GDELT headlines (approximate locations)'});
 }
 
 async function loadNews() {
@@ -760,25 +839,34 @@ function bucket(obj) {
   }
   return out;
 }
+// FBI CDE "summarized" response: offenses.actuals holds the agency's (or state's) monthly counts;
+// offenses.rates holds monthly rates per 100k for the agency, its state and the U.S.
+// Summing 12 monthly rates gives the yearly rate per 100k.
 function parseSummarized(j) {
-  const res = {name: '', years: [], usRate: {}};
+  const res = {name: '', years: [], usRate: {}, stRate: {}, stName: '', through: ''};
   const act = j && j.offenses && j.offenses.actuals;
   if (act && typeof act === 'object') {
-    const keys = Object.keys(act);
+    const rates = (j.offenses && j.offenses.rates) || {};
     const isUS = k => /^united states/i.test(k);
+    const keys = Object.keys(act);
     const offK = keys.find(k => /offenses$/i.test(k) && !isUS(k));
     const clrK = keys.find(k => /clearances$/i.test(k) && !isUS(k));
-    const usK = keys.find(k => /offenses$/i.test(k) && isUS(k));
     res.name = offK ? offK.replace(/\s*offenses$/i, '') : '';
-    const off = bucket(act[offK]), clr = bucket(act[clrK]), us = bucket(act[usK]);
+    const rk = Object.keys(rates);
+    const usK = rk.find(k => isUS(k) && /offenses$/i.test(k));
+    const stK = rk.find(k => /offenses$/i.test(k) && !isUS(k) && k !== offK);
+    res.stName = stK ? stK.replace(/\s*offenses$/i, '') : '';
+    const off = bucket(act[offK]), clr = bucket(act[clrK]), own = bucket(rates[offK]), us = bucket(rates[usK]), st = bucket(rates[stK]);
     const pops = (j.populations && j.populations.population) || {};
-    const pk = Object.keys(pops).find(k => k === res.name) || Object.keys(pops).find(k => !isUS(k));
-    const usPk = Object.keys(pops).find(isUS);
-    const pop = bucket(pops[pk]), usPop = bucket(pops[usPk]);
+    const pop = bucket(pops[res.name] || pops[Object.keys(pops).find(k => !isUS(k))]);
+    const cp = j.cde_properties && j.cde_properties.max_data_date;
+    res.through = (cp && (cp.UCR || Object.values(cp)[0])) || '';
     for (const y of Object.keys(off).map(Number).sort((a, b) => a - b)) {
       const p = pop[y] && pop[y].last;
-      res.years.push({y, count: Math.round(off[y].sum), months: off[y].n, cleared: clr[y] ? Math.round(clr[y].sum) : null, pop: p || null, rate: p ? off[y].sum / p * 1e5 : null});
-      if (us[y] && usPop[y] && usPop[y].last) res.usRate[y] = us[y].sum / usPop[y].last * 1e5;
+      const rate = own[y] && own[y].n >= 12 ? own[y].sum : (p ? off[y].sum / p * 1e5 : null);
+      res.years.push({y, count: Math.round(off[y].sum), months: off[y].n, cleared: clr[y] ? Math.round(clr[y].sum) : null, pop: p || null, rate});
+      if (us[y] && us[y].n >= 12) res.usRate[y] = us[y].sum;
+      if (st[y] && st[y].n >= 12) res.stRate[y] = st[y].sum;
     }
     return res;
   }
@@ -806,9 +894,15 @@ async function loadAgencies() {
   let rows = Array.isArray(d) ? d : Object.values(d || {}).flatMap(v => Array.isArray(v) ? v : []);
   S.agencies = rows.filter(a => a && a.ori).map(a => ({ori: a.ori, name: a.agency_name || a.ori, type: a.agency_type_name || a.agency_type || '', county: a.counties || a.county_name || '', lat: +a.latitude, lon: +a.longitude}));
   G.police.clearLayers(); S.policeMarkers.clear();
+  // Agencies in the same county share one point in the FBI data, so fan them out a little to keep each tappable.
+  const stack = {};
   for (const a of S.agencies) {
     if (!isFinite(a.lat) || !isFinite(a.lon) || (!a.lat && !a.lon)) continue;
-    const m = L.circleMarker([a.lat, a.lon], {radius: 5, color: '#2dd4bf', weight: 1.5, fillColor: '#2dd4bf', fillOpacity: .35})
+    const key = a.lat.toFixed(3) + ',' + a.lon.toFixed(3);
+    const i = stack[key] = (stack[key] ?? -1) + 1;
+    const ang = i * 2.4, r = i ? 0.035 * Math.sqrt(i) : 0;
+    const lat = a.lat + r * Math.sin(ang), lon = a.lon + r * Math.cos(ang) / Math.cos(a.lat * Math.PI / 180);
+    const m = L.circleMarker([lat, lon], {radius: 5, color: '#2dd4bf', weight: 1.5, fillColor: '#2dd4bf', fillOpacity: .35})
       .bindPopup(`<div class="pop"><div class="pt">${esc(a.name)}</div><div class="pg">${esc(a.type)}${a.county ? ' · ' + esc(a.county) + ' Co.' : ''} · ORI ${esc(a.ori)}</div>
       <button class="btn pri" data-act="crime" data-ori="${esc(a.ori)}" data-name="${esc(a.name)}">Show crime numbers</button></div>`).addTo(G.police);
     S.policeMarkers.set(a.ori, m);
@@ -859,6 +953,7 @@ function renderPeek() {
   const maxQ = S.eq.reduce((m, q) => q.mag > (m ? m.mag : -9) ? q : m, null);
   const bits = [];
   if (S.last.mil) bits.push(`<b>${near}</b> military within ${cfg.radius} mi`);
+  else if (S.status.mil && S.status.mil.err === NEEDS_RELAY) bits.push('<b style="color:#93c5fd">Aircraft need relay setup</b>');
   if (S.last.nws) bits.push(home ? `<b style="color:#facc15">${home} weather alert${home > 1 ? 's' : ''} at home</b>` : 'No weather alerts at home');
   if (S.last.sqk) bits.push(`<b>${sq}</b> emergency squawk${sq === 1 ? '' : 's'}`);
   if (maxQ) bits.push(`Top quake <b>M${maxQ.mag.toFixed(1)}</b>`);
@@ -889,7 +984,8 @@ function renderNear() {
     h += sqNear.map((a, i) => `<div class="row" data-src="sqk" data-i="${S.sqkList.indexOf(a)}"><span class="dot" style="background:#ef4444"></span><div class="main"><div class="t1">${a.squawk} ${SQK[a.squawk]} — ${esc(a.call || a.hex.toUpperCase())}</div><div class="t2">${esc(a.desc)}</div></div><div class="side"><b>${Math.round(a.dist)} mi ${compass(a.brg)}</b>${fmtAlt(a.alt)}</div></div>`).join('');
   }
   h += `<div class="sec">Military aircraft within ${cfg.radius} mi<span class="r">${S.milSrc ? 'via ' + esc(S.milSrc) : ''}</span></div>`;
-  if (S.status.mil && !S.status.mil.ok && !S.milList.length) h += `<div class="empty">Couldn’t reach the aircraft feeds: ${esc(S.status.mil.err)}. Retrying shortly.</div>`;
+  if (S.status.mil && !S.status.mil.ok && !S.milList.length && S.status.mil.err === NEEDS_RELAY) h += `<div class="card" style="border-left:3px solid var(--blue)"><b>One-time setup needed for aircraft</b><div class="small muted" style="margin-top:4px">The military-flight and emergency-squawk feeds don’t let web pages read them directly. A free relay on your own Cloudflare account fixes that. It takes about 5 minutes and you only do it once.</div><div class="btnrow"><a class="btn pri" href="https://github.com/timothybrinkman/overwatch#relay-setup" target="_blank" rel="noopener">Setup steps</a><button class="btn" data-open-settings>Enter relay URL</button></div></div>`;
+  else if (S.status.mil && !S.status.mil.ok && !S.milList.length) h += `<div class="empty">Couldn’t reach the aircraft feeds: ${esc(S.status.mil.err)}. Retrying shortly.</div>`;
   else if (!S.last.mil) h += `<div class="empty">Loading aircraft…</div>`;
   else if (!nearCache.length) h += `<div class="empty">Nothing military is broadcasting within ${cfg.radius} mi right now.</div>`;
   else h += nearCache.map((a, i) => milRow(a, i, 'near')).join('');
@@ -982,12 +1078,16 @@ function offenseBlock(label, r, stR, color) {
     return `<div class="ob"><div class="ob-h"><span class="lbl">${label}</span>${any ? `<span class="big">${fmtNum(any.count)}</span>` : ''}</div><div class="small muted">${any ? `${any.y}, partial year (${any.months} months reported)` : 'No data reported.'}</div></div>`;
   }
   const ch = prev ? pctChange(last.count, prev.count) : null;
-  const stRate = stR ? (stR.years.find(x => x.y === last.y) || {}).rate : null;
-  const usRate = r.usRate[last.y] || (stR && stR.usRate[last.y]);
+  const isState = !r.stName;
+  const stRate = r.stRate[last.y] ?? (stR ? (stR.years.find(x => x.y === last.y) || {}).rate : null);
+  const usRate = r.usRate[last.y] ?? (stR && stR.usRate[last.y]);
   const clr = last.cleared != null && last.count ? Math.round(last.cleared / last.count * 100) : null;
-  return `<div class="ob"><div class="ob-h"><span class="lbl">${label}</span>${ch != null ? `<span class="chg ${ch > 0 ? 'up' : 'dn'}">${ch > 0 ? '▲' : '▼'} ${Math.abs(ch).toFixed(0)}%</span>` : ''}<span class="big">${fmtNum(last.count)}</span></div>
+  const newer = r.years.filter(x => x.y > last.y && x.months > 0).pop();
+  const stLabel = esc((cfg.state || 'State').toUpperCase());
+  return `<div class="ob"><div class="ob-h"><span class="lbl">${label}</span>${ch != null ? (Math.abs(ch) < 0.5 ? '<span class="chg" style="color:var(--muted);background:var(--panel)">no change</span>' : `<span class="chg ${ch > 0 ? 'up' : 'dn'}">${ch > 0 ? '▲' : '▼'} ${Math.abs(ch).toFixed(0)}%</span>`) : ''}<span class="big">${fmtNum(last.count)}</span></div>
     <div class="small muted">${last.y} offenses${prev ? ` · ${fmtNum(prev.count)} in ${prev.y}` : ''}${clr != null ? ` · ${clr}% cleared` : ''}</div>
-    <div class="cmp"><div><small>Per 100k</small><b>${fmtNum(last.rate)}</b></div><div><small>${stR ? esc((cfg.state || '').toUpperCase()) : 'State'}</small><b>${fmtNum(stRate)}</b></div><div><small>U.S.</small><b>${fmtNum(usRate)}</b></div></div>
+    ${newer ? `<div class="small muted">So far in ${newer.y}: ${fmtNum(newer.count)} (${newer.months} month${newer.months === 1 ? '' : 's'} reported)</div>` : ''}
+    <div class="cmp"><div><small>${isState ? stLabel + ' per 100k' : 'Per 100k'}</small><b>${fmtNum(last.rate)}</b></div>${isState ? `<div><small>Cleared</small><b>${clr != null ? clr + '%' : '—'}</b></div>` : `<div><small>${stLabel} per 100k</small><b>${fmtNum(stRate)}</b></div>`}<div><small>U.S. per 100k</small><b>${fmtNum(usRate)}</b></div></div>
     ${bars(r.years, color)}</div>`;
 }
 async function loadCrimeCard() {
@@ -996,17 +1096,13 @@ async function loadCrimeCard() {
   card.innerHTML = `<div class="muted">Loading ${esc(sel.name)}…</div>`;
   try {
     const [v, p] = await Promise.all([summarized(sel, 'V'), summarized(sel, 'P')]);
-    let sv = null, sp = null;
-    if (sel.kind !== 'state') {
-      const sx = {kind: 'state', id: (cfg.state || 'NE').toUpperCase()};
-      try { [sv, sp] = await Promise.all([summarized(sx, 'V'), summarized(sx, 'P')]); } catch {}
-    }
+    const sv = null, sp = null; // state and U.S. rates come back inside each agency's response
     if (tok !== crimeToken) return;
     S.crimeData[sel.id] = {sel, v, p, sv, sp};
     const saved = cfg.agencies.some(a => a.ori === sel.id) || sel.kind === 'state';
     card.innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b style="font-size:15px">${esc(v.name || sel.name)}</b><span class="spacer"></span>${saved ? '' : `<button class="btn" style="padding:6px 10px" data-save-ag>Save</button>`}</div>
       ${offenseBlock('Violent crime', v, sv, '#ef4444')}${offenseBlock('Property crime', p, sp, '#f59e0b')}
-      <div class="hint">Violent = murder, rape, robbery, aggravated assault. Property = burglary, theft, vehicle theft, arson. Source: FBI Crime Data Explorer.</div>`;
+      <div class="hint">Violent = murder, rape, robbery, aggravated assault. Property = burglary, theft, vehicle theft, arson. Source: FBI Crime Data Explorer${v.through ? `, data through ${esc(v.through)}` : ''}.</div>`;
     setStatus('crime', true, {src: 'api.usa.gov (FBI)'});
   } catch (e) {
     if (tok !== crimeToken) return;
@@ -1174,7 +1270,7 @@ function openSettings() {
   $('#sLabel').value = cfg.home.label; $('#sLat').value = cfg.home.lat; $('#sLon').value = cfg.home.lon;
   $('#sRadius').value = cfg.radius; $('#sState').value = cfg.state; $('#sWatch').value = cfg.watch;
   $('#sAgencies').value = cfg.agencies.map(a => `${a.ori} = ${a.name}`).join('\n');
-  $('#sKey').value = cfg.dataGovKey; $('#sAI').value = cfg.aiKey; $('#sModel').value = cfg.model;
+  $('#sKey').value = cfg.dataGovKey; $('#sAI').value = cfg.aiKey; $('#sModel').value = cfg.model; $('#sRelay').value = cfg.relay || '';
   $('#sWorldQ').value = cfg.worldQuery; $('#sLocalQ').value = cfg.localQuery; $('#sStateQ').value = cfg.stateQuery;
   renderSources();
   $('#settings').hidden = false;
@@ -1192,7 +1288,32 @@ $('#btnGeo').addEventListener('click', () => {
     b.textContent = 'Got it. Tap Save';
   }, err => { b.textContent = 'Couldn’t get location: ' + err.message; }, {enableHighAccuracy: false, timeout: 15000});
 });
+function cleanRelay(v) {
+  v = (v || '').trim().replace(/\/+$/, '');
+  if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
+  return v;
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-open-settings]')) { openSettings(); setTimeout(() => { $('#sRelay').scrollIntoView({block: 'center'}); $('#sRelay').focus(); }, 50); }
+});
+$('#btnTestRelay').addEventListener('click', async () => {
+  const hint = $('#relayHint'), b = $('#btnTestRelay');
+  const base = cleanRelay($('#sRelay').value);
+  if (!base) { hint.textContent = 'Paste your relay URL first (it ends in .workers.dev).'; return; }
+  b.textContent = 'Testing…';
+  const t0 = Date.now();
+  try {
+    const d = await getJSON(`${base}/?url=${encodeURIComponent('https://api.adsb.lol/v2/mil')}`, {timeout: 20000});
+    const n = (d.ac || d.aircraft || []).length;
+    hint.innerHTML = `<b style="color:#22c55e">Relay works.</b> ${n} military aircraft came back in ${Date.now() - t0} ms. Tap Save.`;
+  } catch (err) {
+    hint.innerHTML = `<b style="color:#fca5a5">Relay test failed:</b> ${esc(err.message)}. Check the URL, and make sure the Worker shows “Overwatch relay is running.” when you open it.`;
+  } finally { b.textContent = 'Test relay'; }
+});
 $('#btnSave').addEventListener('click', () => {
+  const oldRelay = cfg.relay || '';
+  cfg.relay = cleanRelay($('#sRelay').value);
+  if (cfg.relay !== oldRelay) { S.failAt.mil = S.failAt.sqk = S.failAt.world = 0; ['mil', 'sqk', 'world'].forEach(k => run(k, true)); }
   const old = JSON.stringify([cfg.home, cfg.radius, cfg.state, cfg.worldQuery, cfg.localQuery, cfg.stateQuery, cfg.watch]);
   const lat = parseFloat($('#sLat').value), lon = parseFloat($('#sLon').value);
   if (isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) cfg.home = {lat, lon, label: $('#sLabel').value.trim() || 'Home'};
