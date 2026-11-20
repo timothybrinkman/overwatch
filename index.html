@@ -1,0 +1,1243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0e13">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Overwatch — Live Threat Map</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0e13'/%3E%3Ccircle cx='32' cy='32' r='20' fill='none' stroke='%232dd4bf' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='6' fill='%23ef4444'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap">
+<style>
+:root{
+  --bg:#0a0e13; --panel:#0f151d; --panel2:#141c26; --line:#1f2a36; --text:#e6edf3; --muted:#8b98a5; --dim:#5b6875;
+  --teal:#2dd4bf; --red:#ef4444; --amber:#f59e0b; --blue:#60a5fa; --purple:#a78bfa; --yellow:#facc15;
+  --top:calc(52px + env(safe-area-inset-top));
+  --peek:118px;
+  --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:14px/1.4 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;overflow:hidden}
+button{font:inherit;color:inherit}
+a{color:var(--teal)}
+#map{position:fixed;inset:0;background:#0b1016}
+
+/* header */
+#top{position:fixed;top:0;left:0;right:0;z-index:1000;padding:env(safe-area-inset-top) 10px 0;height:var(--top);display:flex;align-items:center;gap:10px;background:rgba(10,14,19,.88);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.14em;font-size:14px}
+.brand svg{flex:none}
+.where{font-size:11.5px;color:var(--muted);line-height:1.2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.where b{color:var(--text);font-weight:500}
+#live{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:5px;vertical-align:1px}
+#live.ok{background:#22c55e;box-shadow:0 0 0 0 rgba(34,197,94,.6);animation:ping 2s infinite}
+#live.warn{background:var(--amber)}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(34,197,94,.55)}70%{box-shadow:0 0 0 8px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
+.spacer{flex:1}
+.iconbtn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line);background:var(--panel);display:grid;place-items:center;cursor:pointer;flex:none}
+.iconbtn:active{background:var(--panel2)}
+.iconbtn.spin svg{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* layer chips */
+#chips{position:fixed;top:var(--top);left:0;right:0;z-index:900;display:flex;gap:6px;overflow-x:auto;padding:8px 10px;scrollbar-width:none}
+#chips::-webkit-scrollbar{display:none}
+.chip{flex:none;display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:999px;border:1px solid var(--line);background:rgba(15,21,29,.92);font-size:12.5px;font-weight:500;cursor:pointer;white-space:nowrap}
+.chip .d{width:8px;height:8px;border-radius:50%}
+.chip .n{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.chip.off{opacity:.42}
+.chip.err .n{color:var(--red)}
+
+/* map buttons */
+#fab{position:fixed;right:10px;top:calc(var(--top) + 52px);z-index:900;display:flex;flex-direction:column;gap:8px}
+#fab .iconbtn{background:rgba(15,21,29,.92)}
+
+/* bottom sheet */
+#sheet{position:fixed;left:0;right:0;bottom:0;z-index:950;background:var(--panel);border-top:1px solid var(--line);border-radius:16px 16px 0 0;display:flex;flex-direction:column;height:calc(var(--peek) + env(safe-area-inset-bottom));transition:height .25s ease;box-shadow:0 -10px 30px rgba(0,0,0,.45)}
+#sheet[data-state=half]{height:52vh;height:52dvh}
+#sheet[data-state=full]{height:calc(100vh - var(--top) - 8px);height:calc(100dvh - var(--top) - 8px)}
+.grab{padding:8px 0 4px;display:grid;place-items:center;cursor:pointer;touch-action:none}
+.grab i{display:block;width:40px;height:4px;border-radius:4px;background:#2b3846}
+#peekline{padding:0 14px 6px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#peekline b{color:var(--text);font-weight:600}
+#peekline .sep{color:var(--dim);margin:0 6px}
+#tabs{display:flex;gap:4px;padding:0 8px;border-bottom:1px solid var(--line)}
+#tabs button{flex:1;background:none;border:0;padding:9px 4px 10px;font-size:13px;font-weight:600;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+#tabs button.on{color:var(--text);border-bottom-color:var(--teal)}
+#tabs button .c{font-family:var(--mono);font-size:10.5px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:0 5px;margin-left:4px;color:var(--muted)}
+#panes{flex:1;overflow:hidden;position:relative}
+.pane{position:absolute;inset:0;overflow-y:auto;padding:10px 12px calc(16px + env(safe-area-inset-bottom));display:none;-webkit-overflow-scrolling:touch}
+.pane.on{display:block}
+
+/* lists & cards */
+.sec{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:14px 2px 6px;font-weight:600;display:flex;align-items:center;gap:8px}
+.sec:first-child{margin-top:4px}
+.sec .r{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:500}
+.row{display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--line);background:var(--panel2);border-radius:10px;margin-bottom:6px;cursor:pointer;text-decoration:none;color:inherit}
+.row:active{border-color:#2b3846}
+.row .dot{width:10px;height:10px;border-radius:50%;margin-top:4px;flex:none}
+.row .main{min-width:0;flex:1}
+.row .t1{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis}
+.row .t2{font-size:12px;color:var(--muted);margin-top:1px}
+.row .side{font-family:var(--mono);font-size:11.5px;color:var(--muted);text-align:right;white-space:nowrap}
+.row .side b{display:block;color:var(--text);font-size:13px}
+.mono{font-family:var(--mono)}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+.empty{padding:14px;border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:13px;text-align:center}
+.card{border:1px solid var(--line);background:var(--panel2);border-radius:12px;padding:12px;margin-bottom:8px}
+.alert{border-left:3px solid var(--yellow)}
+.pills{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 8px}
+.pill{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:6px 11px;font-size:12.5px;font-weight:500;cursor:pointer}
+.pill.on{border-color:var(--teal);color:var(--teal);background:rgba(45,212,191,.08)}
+.catbar{display:flex;flex-wrap:wrap;gap:5px 10px;font-size:11.5px;color:var(--muted)}
+.catbar span{display:inline-flex;align-items:center;gap:5px}
+.catbar i{width:8px;height:8px;border-radius:50%;display:inline-block}
+
+/* crime */
+.ob{padding:10px 0;border-top:1px solid var(--line)}
+.ob:first-of-type{border-top:0;padding-top:4px}
+.ob-h{display:flex;align-items:baseline;gap:8px}
+.ob-h .lbl{font-weight:600}
+.ob-h .big{font-family:var(--mono);font-size:22px;font-weight:600;margin-left:auto}
+.chg{font-family:var(--mono);font-size:12px;padding:1px 6px;border-radius:6px}
+.chg.up{color:#fca5a5;background:rgba(239,68,68,.12)}
+.chg.dn{color:#86efac;background:rgba(34,197,94,.12)}
+.cmp{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}
+.cmp div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.cmp small{display:block;color:var(--muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
+.cmp b{font-family:var(--mono);font-size:13.5px;font-weight:600}
+.bars{width:100%;height:42px;display:block;margin-top:8px}
+.bars-x{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--dim)}
+.search{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);font:inherit;margin-bottom:6px}
+.links{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.links a{display:block;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);color:var(--text);text-decoration:none;font-size:12.5px}
+.links a:after{content:" ↗";color:var(--dim)}
+
+/* brief */
+.brief h4{margin:14px 0 6px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.brief h4:first-child{margin-top:2px}
+.brief p,.brief li{margin:0 0 6px;font-size:13.5px}
+.brief ul{margin:0;padding-left:18px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);font-weight:600;font-size:13px;cursor:pointer;text-decoration:none;color:var(--text)}
+.btn.pri{background:var(--teal);border-color:var(--teal);color:#04201c}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+#aiOut{white-space:pre-wrap;font-size:13.5px}
+
+/* map markers */
+.pl{background:none;border:0}
+.pl svg{display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
+.pl.gnd{opacity:.45}
+.wring{position:absolute;inset:-7px;border:2px solid var(--yellow);border-radius:50%}
+.sq{background:none;border:0}
+.sq span{position:absolute;inset:0;border-radius:50%;background:var(--red);border:2px solid #fff}
+.sq span:after{content:"";position:absolute;inset:-8px;border-radius:50%;border:2px solid var(--red);animation:pulse 1.6s infinite}
+@keyframes pulse{from{transform:scale(.6);opacity:1}to{transform:scale(1.6);opacity:0}}
+.home-pin{background:none;border:0}
+.home-pin span{position:absolute;inset:0;border-radius:50%;background:var(--teal);border:3px solid #04201c;box-shadow:0 0 0 2px var(--teal)}
+.base{background:none;border:0}
+.base span{position:absolute;inset:0;background:#0a0e13;border:2px solid var(--yellow);transform:rotate(45deg)}
+
+/* leaflet dark */
+.leaflet-container{font:inherit;background:#0b1016}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:#111821;color:var(--text);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.leaflet-popup-content{margin:12px 14px;font-size:13px;line-height:1.4}
+.leaflet-container a.leaflet-popup-close-button{color:var(--muted)}
+.leaflet-control-attribution{background:rgba(10,14,19,.7)!important;color:var(--dim)!important;font-size:9.5px}
+.leaflet-control-attribution a{color:var(--muted)!important}
+.leaflet-bottom{bottom:calc(var(--peek) + env(safe-area-inset-bottom))}
+.pop .pt{font-weight:700;font-size:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pop .pg{color:var(--muted);font-size:12.5px}
+.tag{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#06090d;padding:2px 6px;border-radius:5px}
+.kv{width:100%;border-collapse:collapse;margin:8px 0 6px;font-size:12.5px}
+.kv td{padding:2px 0;border-bottom:1px solid var(--line)}
+.kv td:first-child{color:var(--muted);width:42%}
+.kv td:last-child{font-family:var(--mono);text-align:right}
+.plinks{display:flex;gap:10px;flex-wrap:wrap;font-size:12.5px;margin-top:4px}
+.pop .btn{padding:7px 10px;font-size:12.5px;margin-top:8px}
+
+/* settings */
+#settings{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center}
+#settings[hidden]{display:none}
+#settings .box{width:100%;max-width:560px;max-height:92vh;max-height:92dvh;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:16px 16px 0 0;padding:16px 16px calc(20px + env(safe-area-inset-bottom))}
+#settings h3{margin:0 0 4px;font-size:16px}
+#settings label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}
+#settings input,#settings textarea{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit;font-size:14px}
+#settings textarea{min-height:64px;font-family:var(--mono);font-size:12.5px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.grid3{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:8px}
+details{margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+summary{cursor:pointer;font-weight:600;font-size:13px}
+.src{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--line)}
+.src i{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none;background:var(--dim)}
+.src i.ok{background:#22c55e}.src i.bad{background:var(--red)}
+.hint{font-size:12px;color:var(--muted);margin-top:4px}
+
+/* toasts */
+#toasts{position:fixed;left:10px;right:10px;top:calc(var(--top) + 50px);z-index:3000;display:flex;flex-direction:column;gap:6px;pointer-events:none;align-items:center}
+.toast{pointer-events:auto;max-width:520px;width:100%;background:#111821;border:1px solid var(--line);border-left:4px solid var(--red);border-radius:10px;padding:10px 12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.5);animation:tin .25s ease}
+@keyframes tin{from{transform:translateY(-8px);opacity:0}}
+#boot{position:fixed;inset:0;display:grid;place-items:center;color:var(--muted);z-index:500;font-size:13px;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="boot">Loading map…</div>
+
+<header id="top">
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 64 64"><circle cx="32" cy="32" r="22" fill="none" stroke="#2dd4bf" stroke-width="5"/><circle cx="32" cy="32" r="7" fill="#ef4444"/></svg>
+    OVERWATCH
+  </div>
+  <div class="where"><span id="live"></span><b id="homeLabel">—</b><br><span id="updated">starting…</span></div>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="btnRefresh" aria-label="Refresh"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+  <button class="iconbtn" id="btnSettings" aria-label="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+</header>
+
+<div id="chips"></div>
+
+<div id="fab">
+  <button class="iconbtn" id="btnHome" aria-label="Zoom to home"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></button>
+  <button class="iconbtn" id="btnWorld" aria-label="Zoom to world"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></button>
+</div>
+
+<section id="sheet" data-state="peek">
+  <div class="grab" id="grab"><i></i></div>
+  <div id="peekline">Loading live feeds…</div>
+  <nav id="tabs">
+    <button data-tab="near" class="on">Near me<span class="c" id="cNear">0</span></button>
+    <button data-tab="feed">Feed<span class="c" id="cFeed">0</span></button>
+    <button data-tab="crime">Crime</button>
+    <button data-tab="brief">Brief</button>
+  </nav>
+  <div id="panes">
+    <div class="pane on" id="pane-near"></div>
+    <div class="pane" id="pane-feed"></div>
+    <div class="pane" id="pane-crime"></div>
+    <div class="pane" id="pane-brief"></div>
+  </div>
+</section>
+
+<div id="settings" hidden>
+  <div class="box">
+    <div style="display:flex;align-items:center;gap:10px"><h3>Settings</h3><div class="spacer"></div><button class="iconbtn" id="btnCloseSet" aria-label="Close">✕</button></div>
+    <label>Home</label>
+    <div class="grid3"><input id="sLabel" placeholder="Label"><input id="sLat" inputmode="decimal" placeholder="Lat"><input id="sLon" inputmode="decimal" placeholder="Lon"></div>
+    <div class="btnrow"><button class="btn" id="btnGeo">Use my current location</button></div>
+    <div class="grid2">
+      <div><label>“Near me” radius (miles)</label><input id="sRadius" inputmode="numeric"></div>
+      <div><label>State for alerts &amp; crime</label><input id="sState" maxlength="2" style="text-transform:uppercase"></div>
+    </div>
+    <label>Watchlist — callsign starts with, type code, or hex (comma separated)</label>
+    <input id="sWatch" placeholder="e.g. RCH, SAM, COBRA, B52">
+    <div class="hint">Matches get a yellow ring on the map and an alert when they enter your radius.</div>
+    <label>Saved police agencies — one per line: ORI = Name</label>
+    <textarea id="sAgencies"></textarea>
+    <div class="hint">Tap any agency on the map (Police / crime layer) to load its numbers, then save it here.</div>
+    <label>api.data.gov key (FBI crime data) — free at <a href="https://api.data.gov/signup/" target="_blank" rel="noopener">api.data.gov/signup</a></label>
+    <input id="sKey" placeholder="Blank = DEMO_KEY (about 30 requests per hour)" autocomplete="off">
+    <details>
+      <summary>AI brief (optional)</summary>
+      <label>Anthropic API key — stored only on this phone</label>
+      <input id="sAI" type="password" autocomplete="off" placeholder="sk-ant-…">
+      <label>Model</label>
+      <input id="sModel">
+      <div class="hint">Without a key, the Brief tab's “Copy for Claude” button works for free in the Claude app.</div>
+    </details>
+    <details>
+      <summary>Advanced: news search terms</summary>
+      <label>World events map (GDELT)</label><textarea id="sWorldQ"></textarea>
+      <label>Local crime news</label><textarea id="sLocalQ"></textarea>
+      <label>Statewide crime news</label><textarea id="sStateQ"></textarea>
+    </details>
+    <details open>
+      <summary>Data sources</summary>
+      <div id="srcList"></div>
+    </details>
+    <div class="hint" style="margin-top:12px">Install: open this page in Chrome → ⋮ menu → <b>Add to Home screen</b>.</div>
+    <div class="btnrow" style="margin-top:14px">
+      <button class="btn pri" id="btnSave">Save</button>
+      <button class="btn" id="btnClear">Clear cached data</button>
+      <button class="btn" id="btnReset">Reset to defaults</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+'use strict';
+/* ============ helpers ============ */
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+  keys() { try { return Object.keys(localStorage); } catch { return []; } }
+};
+const fmtNum = n => n == null || !isFinite(n) ? '—' : Math.round(n).toLocaleString();
+function ago(t) {
+  if (!t) return '';
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+const clock = t => new Date(t).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+function distMi(a, b) {
+  const R = 3958.8, r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const s = Math.sin(dLat/2)**2 + Math.cos(a.lat*r) * Math.cos(b.lat*r) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+function bearing(a, b) {
+  const r = Math.PI / 180;
+  const y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r);
+  const x = Math.cos(a.lat*r) * Math.sin(b.lat*r) - Math.sin(a.lat*r) * Math.cos(b.lat*r) * Math.cos((b.lon - a.lon) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+const COMPASS = ['N','NE','E','SE','S','SW','W','NW'];
+const compass = d => COMPASS[Math.round(d / 45) % 8];
+const fmtAlt = a => a === 'ground' ? 'On ground' : (a == null || !isFinite(a)) ? '—' : (a >= 18000 ? 'FL' + Math.round(a / 100) : Math.round(a).toLocaleString() + ' ft');
+const host = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+
+async function getJSON(url, opts = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), opts.timeout || 15000);
+  try {
+    const r = await fetch(url, {signal: ctl.signal, headers: opts.headers, method: opts.method || 'GET', body: opts.body});
+    const txt = await r.text();
+    if (!r.ok) throw new Error('HTTP ' + r.status + (txt ? ': ' + txt.slice(0, 140) : ''));
+    try { return JSON.parse(txt); } catch { throw new Error(txt ? txt.slice(0, 160) : 'Empty response'); }
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Timed out');
+    if (e instanceof TypeError) throw new Error('Blocked or offline (' + host(url) + ')');
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+async function firstOk(urls, opts) {
+  let last;
+  for (const u of urls) { try { return {data: await getJSON(u, opts), url: u}; } catch (e) { last = e; } }
+  throw last || new Error('No source');
+}
+// GDELT asks for at most one request every 5 seconds
+let gChain = Promise.resolve(), gLast = 0;
+function gdelt(url) {
+  const p = gChain.then(async () => {
+    const wait = gLast + 5600 - Date.now();
+    if (wait > 0) await sleep(wait);
+    gLast = Date.now();
+    return getJSON(url, {timeout: 25000});
+  });
+  gChain = p.catch(() => {});
+  return p;
+}
+
+/* ============ config ============ */
+const DEFAULTS = {
+  home: {lat: 41.4297, lon: -97.3684, label: 'Columbus, NE'},
+  radius: 300, state: 'NE',
+  agencies: [{ori: 'NB0710100', name: 'Columbus PD'}, {ori: 'NB0710000', name: 'Platte Co. Sheriff'}],
+  dataGovKey: '', aiKey: '', model: 'claude-haiku-5-5',
+  watch: '',
+  worldQuery: '(airstrike OR "missile strike" OR explosion OR shelling OR "drone strike" OR "terror attack" OR "mass shooting" OR coup OR "armed clash")',
+  localQuery: '(Columbus OR "Platte County") Nebraska (police OR sheriff OR arrested OR charged OR shooting OR assault OR theft OR crash)',
+  stateQuery: 'Nebraska ("State Patrol" OR police OR sheriff) (arrested OR shooting OR homicide OR charged OR robbery OR stabbing)',
+  layers: {mil: true, sqk: true, eq: true, eonet: true, nws: true, world: true, police: false}
+};
+function loadCfg() {
+  const s = LS.get('ow.cfg', {}) || {};
+  const c = JSON.parse(JSON.stringify(DEFAULTS));
+  Object.assign(c, s);
+  c.home = Object.assign({}, DEFAULTS.home, s.home || {});
+  c.layers = Object.assign({}, DEFAULTS.layers, s.layers || {});
+  if (!Array.isArray(c.agencies)) c.agencies = DEFAULTS.agencies;
+  return c;
+}
+let cfg = loadCfg();
+const saveCfg = () => LS.set('ow.cfg', cfg);
+
+/* ============ state ============ */
+const S = {
+  milList: [], milMarkers: new Map(), milSrc: '',
+  sqkList: [], sqkMarkers: new Map(),
+  eq: [], eqMarkers: new Map(),
+  eonet: [], eonetMarkers: new Map(),
+  nws: [], nwsHome: [], nwsLayers: new Map(),
+  world: [], worldMarkers: [],
+  agencies: null, policeMarkers: new Map(),
+  news: {local: [], state: []}, newsTab: 'local',
+  crimeSel: null, crimeData: {},
+  status: {}, last: {}, running: {}, primed: {}, failAt: {}, seen: {sqk: new Set(), watch: new Set(), nws: new Set(), eq: new Set()},
+  tab: 'near', feed: []
+};
+S.crimeSel = {kind: 'agency', id: cfg.agencies[0]?.ori || 'NB0710100', name: cfg.agencies[0]?.name || 'Columbus PD'};
+
+/* ============ military classification ============ */
+const CATS = {
+  tanker:   {key:'tanker',   label:'Tanker',        color:'#22d3ee'},
+  isr:      {key:'isr',      label:'Recon / ISR',   color:'#f472b6'},
+  command:  {key:'command',  label:'Command / VIP', color:'#facc15'},
+  bomber:   {key:'bomber',   label:'Bomber',        color:'#ef4444'},
+  fighter:  {key:'fighter',  label:'Fighter',       color:'#fb923c'},
+  transport:{key:'transport',label:'Transport',     color:'#60a5fa'},
+  helo:     {key:'helo',     label:'Helicopter',    color:'#34d399'},
+  drone:    {key:'drone',    label:'Drone',         color:'#c084fc'},
+  trainer:  {key:'trainer',  label:'Trainer',       color:'#94a3b8'},
+  other:    {key:'other',    label:'Other',         color:'#a5b4fc'}
+};
+function milCat(t, desc) {
+  const d = (desc || '').toUpperCase();
+  if (/^(K35|KC\d|KC1|MRTT|A33\d|A310|K30|DC10)/.test(t) || /TANKER/.test(d)) return CATS.tanker;
+  if (/^(B52|B1|B1B|B2|B21|TU95|TU22|TU16|TU160)$/.test(t)) return CATS.bomber;
+  if (/^(Q4|RQ4|Q9|MQ9|MQ1|Q1|RQ7|MQ4|HRON|TB2|Q25)/.test(t) || /UNMANNED|DRONE/.test(d)) return CATS.drone;
+  if (/^(R135|E3|E6|E7|E8|E2|P8|P3|EP3|U2|C135|RC|MC12|E11|WC13|OC13|S3|CL41)/.test(t)) return CATS.isr;
+  if (/^(E4|B74|C32|C37|C40|VC25|B75|GLF|C20|C21|A319|A32|B73|FA7X|F900|CL60|GL5T|LJ)/.test(t)) return CATS.command;
+  if (/^(F1[4-8]|F16|F22|F35|FA18|F18|A10|EUFI|RFAL|TOR|GRIF|JAS|MIR|SU[23]|MG2|J10|J20|AV8|HAR|F5)/.test(t)) return CATS.fighter;
+  if (/^(H\d|UH|AH|CH|MH|HH|V22|EC\d|AS3|AS5|NH9|EH10|LYNX|A1[0-9]9|S70|S92|S61|B06|B407|B412|R44|H500)/.test(t) || /HELICOPTER|COPTER/.test(d)) return CATS.helo;
+  if (/^(T38|T6|TEX|T45|T1|T7|PC[279]|PC21|HAWK|M346|L39|G120|SR2|TUCA|K8|DA4|C172|AJET|ALPH|T50|BE40)/.test(t)) return CATS.trainer;
+  if (/^(C17|C5|C130|C30J|C2|C27|A400|C160|C295|CN35|C12|C26|C146|AN|IL7|Y8|Y9|C390|E390|DC3|C208|BE20|PC12|DHC|B350|KODI)/.test(t)) return CATS.transport;
+  return CATS.other;
+}
+const TYPE_NAMES = {K35R:'KC-135R Stratotanker',K35E:'KC-135E Stratotanker',KC46:'KC-46A Pegasus',R135:'RC-135 recon',E3TF:'E-3 Sentry AWACS',E3CF:'E-3 Sentry AWACS',E6:'E-6B Mercury',E4:'E-4B Nightwatch',P8:'P-8A Poseidon',B52:'B-52H Stratofortress',B1:'B-1B Lancer',B2:'B-2 Spirit',C17:'C-17 Globemaster III',C5M:'C-5M Super Galaxy',C5:'C-5 Galaxy',C130:'C-130 Hercules',C30J:'C-130J Super Hercules',H60:'H-60 Black Hawk / Seahawk',V22:'V-22 Osprey',H47:'CH-47 Chinook',F16:'F-16 Fighting Falcon',F35:'F-35 Lightning II',F15:'F-15 Eagle',F22:'F-22 Raptor',FA18:'F/A-18 Hornet',A10:'A-10 Thunderbolt II',T38:'T-38 Talon',TEX2:'T-6 Texan II',C32:'C-32 (VIP 757)',C37:'C-37 (VIP Gulfstream)',C40:'C-40 Clipper',Q4:'RQ-4 Global Hawk',MQ9:'MQ-9 Reaper',U2:'U-2 Dragon Lady',C12:'C-12 Huron',C2:'C-2 Greyhound',E2:'E-2 Hawkeye',A400:'A400M Atlas'};
+const SQK = {'7500':'Hijack','7600':'Radio failure','7700':'Emergency'};
+const BASES = [
+  {n:'Offutt AFB', d:'55th Wing (RC-135 recon) · E-4B', lat:41.1183, lon:-95.9125},
+  {n:'Lincoln Air National Guard Base', d:'155th Air Refueling Wing · KC-135', lat:40.851, lon:-96.759},
+  {n:'Whiteman AFB', d:'509th Bomb Wing · B-2', lat:38.7303, lon:-93.5479},
+  {n:'McConnell AFB', d:'22nd Air Refueling Wing · KC-46', lat:37.623, lon:-97.2672},
+  {n:'F.E. Warren AFB', d:'90th Missile Wing · ICBM field', lat:41.1335, lon:-104.8667},
+  {n:'Ellsworth AFB', d:'28th Bomb Wing · B-1B', lat:44.145, lon:-103.1036}
+];
+const watchTokens = () => (cfg.watch || '').toUpperCase().split(/[,\s]+/).filter(Boolean);
+const PLANE = 'M12 1.8c.9 0 1.4 1 1.4 2.2v5.3l7.8 4.7v2.1l-7.8-2.5v5l2.3 1.7v1.7L12 21.1l-3.7.9v-1.7l2.3-1.7v-5l-7.8 2.5v-2.1l7.8-4.7V4c0-1.2.5-2.2 1.4-2.2z';
+const HELI = 'M12 6a3 3 0 0 1 3 3v5a3 3 0 0 1-2 2.8V21h-2v-4.2A3 3 0 0 1 9 14V9a3 3 0 0 1 3-3zM2 4.5l20 3-.3 1.6-20-3zM22 4.5l-20 3 .3 1.6 20-3z';
+
+/* ============ map ============ */
+let map;
+const G = {};
+const LAYERS = [
+  {k:'mil', label:'Military', color:'#60a5fa'},
+  {k:'sqk', label:'Emergencies', color:'#ef4444'},
+  {k:'eq', label:'Quakes', color:'#f59e0b'},
+  {k:'eonet', label:'Fires & storms', color:'#f97316'},
+  {k:'nws', label:'Weather', color:'#facc15'},
+  {k:'world', label:'World events', color:'#a78bfa'},
+  {k:'police', label:'Police / crime', color:'#2dd4bf'}
+];
+function initMap() {
+  if (!window.L) { $('#boot').innerHTML = 'Map library didn’t load. Check your connection and reload.'; return false; }
+  $('#boot').remove();
+  map = L.map('map', {zoomControl: false, worldCopyJump: true, preferCanvas: true, minZoom: 2}).setView([cfg.home.lat, cfg.home.lon], 5);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 18,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  }).addTo(map);
+  map.attributionControl.setPrefix(false);
+  ['home','bases', ...LAYERS.map(l => l.k)].forEach(k => G[k] = L.layerGroup());
+  G.home.addTo(map);
+  LAYERS.forEach(l => { if (cfg.layers[l.k]) G[l.k].addTo(map); });
+  if (cfg.layers.mil) G.bases.addTo(map);
+  drawHome();
+  BASES.forEach(b => {
+    L.marker([b.lat, b.lon], {icon: L.divIcon({className: 'base', iconSize: [10, 10], html: '<span></span>'}), keyboard: false})
+      .bindPopup(`<div class="pop"><div class="pt">${esc(b.n)}</div><div class="pg">${esc(b.d)}</div><div class="pg">${Math.round(distMi(cfg.home, b))} mi ${compass(bearing(cfg.home, b))} of ${esc(cfg.home.label)}</div></div>`)
+      .addTo(G.bases);
+  });
+  return true;
+}
+function drawHome() {
+  G.home.clearLayers();
+  L.circle([cfg.home.lat, cfg.home.lon], {radius: cfg.radius * 1609.34, color: '#2dd4bf', weight: 1, opacity: .5, dashArray: '4 6', fill: true, fillOpacity: .03, interactive: false}).addTo(G.home);
+  L.marker([cfg.home.lat, cfg.home.lon], {icon: L.divIcon({className: 'home-pin', iconSize: [14, 14], html: '<span></span>'})})
+    .bindPopup(`<div class="pop"><div class="pt">${esc(cfg.home.label)}</div><div class="pg">Home · ${cfg.radius} mi radius</div></div>`).addTo(G.home);
+  $('#homeLabel').textContent = cfg.home.label;
+}
+
+/* ============ chips ============ */
+function counts() {
+  return {mil: S.milList.length, sqk: S.sqkList.length, eq: S.eq.length, eonet: S.eonet.length, nws: S.nws.length, world: S.world.length, police: S.agencies ? S.agencies.length : 0};
+}
+function renderChips() {
+  const c = counts();
+  $('#chips').innerHTML = LAYERS.map(l => {
+    const st = S.status[l.k];
+    const n = st && !st.ok ? '!' : (S.last[l.k] ? c[l.k] : '');
+    return `<button class="chip ${cfg.layers[l.k] ? '' : 'off'} ${st && !st.ok ? 'err' : ''}" data-layer="${l.k}"><span class="d" style="background:${l.color}"></span>${l.label}<span class="n">${n}</span></button>`;
+  }).join('');
+}
+$('#chips').addEventListener('click', e => {
+  const b = e.target.closest('[data-layer]'); if (!b || !map) return;
+  const k = b.dataset.layer;
+  cfg.layers[k] = !cfg.layers[k]; saveCfg();
+  if (cfg.layers[k]) { G[k].addTo(map); if (k === 'mil') G.bases.addTo(map); run(k); }
+  else { map.removeLayer(G[k]); if (k === 'mil') map.removeLayer(G.bases); }
+  renderChips();
+});
+
+/* ============ status ============ */
+const SRC_LABEL = {mil:'Military aircraft (ADS-B)', sqk:'Emergency squawks (ADS-B)', eq:'Earthquakes (USGS)', eonet:'Fires, storms, volcanoes (NASA EONET)', nws:'Weather alerts (NWS)', world:'World events (GDELT)', police:'Police agencies (FBI)', news:'Crime news (GDELT)', crime:'Crime statistics (FBI CDE)'};
+function setStatus(k, ok, info = {}) {
+  S.status[k] = Object.assign({ok, at: Date.now()}, info);
+  renderChips(); renderLive();
+  if (!$('#settings').hidden) renderSources();
+}
+function renderLive() {
+  const st = Object.values(S.status);
+  const el = $('#live');
+  el.className = !st.length ? '' : st.every(s => s.ok) ? 'ok' : st.some(s => s.ok) ? 'ok warn' : 'warn';
+  const lastOk = Math.max(0, ...st.filter(s => s.ok).map(s => s.at));
+  $('#updated').textContent = lastOk ? 'Updated ' + clock(lastOk) : 'Connecting…';
+}
+function renderSources() {
+  $('#srcList').innerHTML = Object.keys(SRC_LABEL).map(k => {
+    const s = S.status[k];
+    const cls = !s ? '' : s.ok ? 'ok' : 'bad';
+    const msg = !s ? 'Not loaded yet' : s.ok ? `OK · ${s.count != null ? s.count + (s.count === 1 ? ' item · ' : ' items · ') : ''}${s.src ? esc(s.src) + ' · ' : ''}${ago(s.at)}` : esc(s.err || 'Failed');
+    return `<div class="src"><i class="${cls}"></i><div><b>${SRC_LABEL[k]}</b><br><span class="muted">${msg}</span></div></div>`;
+  }).join('');
+}
+
+/* ============ toasts ============ */
+function toast(msg, color = '#ef4444') {
+  const t = document.createElement('div');
+  t.className = 'toast'; t.style.borderLeftColor = color; t.innerHTML = msg;
+  $('#toasts').appendChild(t);
+  try { navigator.vibrate && navigator.vibrate([80, 40, 80]); } catch {}
+  setTimeout(() => { t.style.transition = 'opacity .4s'; t.style.opacity = 0; setTimeout(() => t.remove(), 450); }, 7000);
+  t.onclick = () => t.remove();
+}
+
+/* ============ loaders ============ */
+async function loadMil() {
+  const {data, url} = await firstOk(['https://api.adsb.lol/v2/mil', 'https://api.airplanes.live/v2/mil', 'https://opendata.adsb.fi/api/v2/mil']);
+  const raw = (data.ac || data.aircraft || []).filter(a => isFinite(a.lat) && isFinite(a.lon));
+  const wt = watchTokens();
+  S.milList = raw.map(a => {
+    const t = String(a.t || '').toUpperCase();
+    const call = String(a.flight || '').trim();
+    const p = {lat: +a.lat, lon: +a.lon};
+    const hex = String(a.hex || '').replace(/^~/, '');
+    return {
+      hex, call, t, r: a.r || '', op: a.ownOp || '',
+      desc: a.desc || TYPE_NAMES[t] || '',
+      alt: a.alt_baro ?? a.alt_geom, gs: a.gs, track: a.track ?? a.true_heading ?? a.mag_heading, squawk: a.squawk,
+      lat: p.lat, lon: p.lon, cat: milCat(t, a.desc),
+      dist: distMi(cfg.home, p), brg: bearing(cfg.home, p),
+      watch: wt.some(x => call.toUpperCase().startsWith(x) || t === x || hex.toUpperCase() === x)
+    };
+  });
+  S.milSrc = host(url);
+  renderMil();
+  // watchlist alerts inside radius
+  const inNow = new Set();
+  S.milList.filter(a => a.watch && a.dist <= cfg.radius).forEach(a => {
+    inNow.add(a.hex);
+    if (S.primed.mil && !S.seen.watch.has(a.hex)) toast(`<b>Watchlist:</b> ${esc(a.call || a.hex)} (${esc(a.desc || a.t)}) is ${Math.round(a.dist)} mi ${compass(a.brg)} of you`, '#facc15');
+  });
+  S.seen.watch = inNow;
+  setStatus('mil', true, {count: S.milList.length, src: S.milSrc});
+}
+function planeIcon(a) {
+  const heli = a.cat.key === 'helo';
+  const sz = heli ? 16 : 20;
+  const gnd = a.alt === 'ground';
+  const rot = heli ? 0 : Math.round(a.track || 0);
+  return L.divIcon({
+    className: 'pl' + (gnd ? ' gnd' : ''), iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
+    html: `${a.watch ? '<span class="wring"></span>' : ''}<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" style="transform:rotate(${rot}deg)"><path d="${heli ? HELI : PLANE}" fill="${a.cat.color}" stroke="#06090d" stroke-width="1.1"/></svg>`
+  });
+}
+function milPopup(a) {
+  return `<div class="pop"><div class="pt"><span class="tag" style="background:${a.cat.color}">${esc(a.cat.label)}</span>${esc(a.call || a.hex.toUpperCase())}</div>
+  <div class="pg">${esc(a.desc || a.t || 'Unknown type')}${a.r ? ' · ' + esc(a.r) : ''}</div>
+  ${a.op ? `<div class="pg">${esc(a.op)}</div>` : ''}
+  <table class="kv"><tr><td>Altitude</td><td>${fmtAlt(a.alt)}</td></tr><tr><td>Speed</td><td>${a.gs != null ? Math.round(a.gs) + ' kt' : '—'}</td></tr>
+  <tr><td>Heading</td><td>${a.track != null ? Math.round(a.track) + '°' : '—'}</td></tr><tr><td>Squawk</td><td>${esc(a.squawk || '—')}</td></tr>
+  <tr><td>From home</td><td>${Math.round(a.dist)} mi ${compass(a.brg)}</td></tr></table>
+  <div class="plinks"><a href="https://adsb.lol/?icao=${encodeURIComponent(a.hex)}" target="_blank" rel="noopener">ADSB.lol</a><a href="https://globe.adsbexchange.com/?icao=${encodeURIComponent(a.hex)}" target="_blank" rel="noopener">ADS-B Exchange</a></div></div>`;
+}
+function renderMil() {
+  if (!map) return;
+  const keep = new Set();
+  for (const a of S.milList) {
+    keep.add(a.hex);
+    let m = S.milMarkers.get(a.hex);
+    const key = a.cat.key + '|' + Math.round((a.track || 0) / 8) + '|' + (a.watch ? 1 : 0) + '|' + (a.alt === 'ground' ? 1 : 0);
+    if (!m) {
+      m = L.marker([a.lat, a.lon], {icon: planeIcon(a), keyboard: false});
+      m._k = key; m._a = a;
+      m.bindPopup(l => milPopup(l._a), {maxWidth: 290});
+      m.addTo(G.mil); S.milMarkers.set(a.hex, m);
+    } else {
+      m._a = a; m.setLatLng([a.lat, a.lon]);
+      if (m._k !== key) { m.setIcon(planeIcon(a)); m._k = key; }
+      if (m.isPopupOpen()) m.getPopup().update();
+    }
+  }
+  for (const [hex, m] of S.milMarkers) if (!keep.has(hex)) { G.mil.removeLayer(m); S.milMarkers.delete(hex); }
+}
+
+async function loadSqk() {
+  const all = [];
+  let src = '', fails = 0;
+  for (const code of ['7500', '7600', '7700']) {
+    try {
+      const {data, url} = await firstOk([`https://api.adsb.lol/v2/sqk/${code}`, `https://api.airplanes.live/v2/squawk/${code}`, `https://opendata.adsb.fi/api/v2/sqk/${code}`]);
+      src = host(url);
+      (data.ac || data.aircraft || []).forEach(a => { if (isFinite(a.lat) && isFinite(a.lon) && String(a.squawk) === code) all.push(a); });
+    } catch (e) { fails++; if (fails === 3) throw e; }
+  }
+  S.sqkList = all.map(a => {
+    const p = {lat: +a.lat, lon: +a.lon}; const t = String(a.t || '').toUpperCase();
+    return {hex: String(a.hex || '').replace(/^~/, ''), call: String(a.flight || '').trim(), t, desc: a.desc || TYPE_NAMES[t] || t, r: a.r || '', op: a.ownOp || '', squawk: String(a.squawk), alt: a.alt_baro, gs: a.gs, track: a.track, lat: p.lat, lon: p.lon, dist: distMi(cfg.home, p), brg: bearing(cfg.home, p), seen: a.seen || 0};
+  });
+  // render
+  const keep = new Set();
+  for (const a of S.sqkList) {
+    keep.add(a.hex);
+    let m = S.sqkMarkers.get(a.hex);
+    const pop = `<div class="pop"><div class="pt"><span class="tag" style="background:#ef4444">${a.squawk} · ${SQK[a.squawk]}</span>${esc(a.call || a.hex.toUpperCase())}</div>
+      <div class="pg">${esc(a.desc)}${a.r ? ' · ' + esc(a.r) : ''}${a.op ? ' · ' + esc(a.op) : ''}</div>
+      <table class="kv"><tr><td>Altitude</td><td>${fmtAlt(a.alt)}</td></tr><tr><td>Speed</td><td>${a.gs != null ? Math.round(a.gs) + ' kt' : '—'}</td></tr><tr><td>From home</td><td>${fmtNum(a.dist)} mi ${compass(a.brg)}</td></tr></table>
+      <div class="plinks"><a href="https://adsb.lol/?icao=${encodeURIComponent(a.hex)}" target="_blank" rel="noopener">Follow on ADSB.lol</a></div></div>`;
+    if (!m) { m = L.marker([a.lat, a.lon], {icon: L.divIcon({className: 'sq', iconSize: [14, 14], html: '<span></span>'}), zIndexOffset: 1000}).bindPopup(pop).addTo(G.sqk); S.sqkMarkers.set(a.hex, m); }
+    else { m.setLatLng([a.lat, a.lon]); m.setPopupContent(pop); }
+    const key = a.hex + a.squawk;
+    if (S.primed.sqk && !S.seen.sqk.has(key) && (a.squawk === '7500' || a.dist <= cfg.radius * 2)) toast(`<b>Squawk ${a.squawk} (${SQK[a.squawk]}):</b> ${esc(a.call || a.hex)} ${esc(a.desc)} — ${fmtNum(a.dist)} mi ${compass(a.brg)}`);
+    S.seen.sqk.add(key);
+  }
+  for (const [hex, m] of S.sqkMarkers) if (!keep.has(hex)) { G.sqk.removeLayer(m); S.sqkMarkers.delete(hex); }
+  setStatus('sqk', true, {count: S.sqkList.length, src});
+}
+
+async function loadEq() {
+  const d = await getJSON('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson');
+  S.eq = (d.features || []).map(f => ({
+    id: f.id, mag: f.properties.mag, place: f.properties.place || 'Unknown location', t: f.properties.time, url: f.properties.url,
+    lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1], depth: f.geometry.coordinates[2], tsunami: f.properties.tsunami, alert: f.properties.alert
+  })).filter(q => isFinite(q.lat) && q.mag != null);
+  G.eq.clearLayers(); S.eqMarkers.clear();
+  for (const q of S.eq) {
+    q.dist = distMi(cfg.home, q);
+    const fresh = Date.now() - q.t < 3 * 3600e3;
+    const m = L.circleMarker([q.lat, q.lon], {radius: Math.max(3, (q.mag - 1.5) * 3.2), color: '#f59e0b', weight: fresh ? 2 : 1, fillColor: '#f59e0b', fillOpacity: fresh ? .55 : .25})
+      .bindPopup(`<div class="pop"><div class="pt"><span class="tag" style="background:#f59e0b">M${q.mag.toFixed(1)}</span>Earthquake</div><div class="pg">${esc(q.place)}</div>
+      <table class="kv"><tr><td>When</td><td>${ago(q.t)}</td></tr><tr><td>Depth</td><td>${q.depth != null ? Math.round(q.depth) + ' km' : '—'}</td></tr><tr><td>From home</td><td>${fmtNum(q.dist)} mi</td></tr>${q.tsunami ? '<tr><td>Tsunami</td><td>Flag set</td></tr>' : ''}</table>
+      <div class="plinks"><a href="${esc(q.url)}" target="_blank" rel="noopener">USGS details</a></div></div>`).addTo(G.eq);
+    S.eqMarkers.set(q.id, m);
+    if (S.primed.eq && !S.seen.eq.has(q.id) && (q.mag >= 6 || (q.dist < cfg.radius && q.mag >= 3))) toast(`<b>M${q.mag.toFixed(1)} earthquake</b> — ${esc(q.place)}`, '#f59e0b');
+    S.seen.eq.add(q.id);
+  }
+  setStatus('eq', true, {count: S.eq.length, src: 'earthquake.usgs.gov'});
+}
+
+const EONET_COLORS = {wildfires: '#f97316', severeStorms: '#38bdf8', volcanoes: '#dc2626', floods: '#3b82f6', landslides: '#a16207', drought: '#d97706', tempExtremes: '#f43f5e', dustHaze: '#a8a29e', snow: '#e2e8f0', manmade: '#e879f9', earthquakes: '#f59e0b'};
+async function loadEonet() {
+  const d = await getJSON('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&days=20&limit=400', {timeout: 25000});
+  S.eonet = (d.events || []).map(e => {
+    const g = e.geometry && e.geometry[e.geometry.length - 1]; if (!g) return null;
+    let lat, lon;
+    if (g.type === 'Point') [lon, lat] = g.coordinates;
+    else if (g.type === 'Polygon' && g.coordinates[0]) { const ring = g.coordinates[0]; lon = ring.reduce((s, c) => s + c[0], 0) / ring.length; lat = ring.reduce((s, c) => s + c[1], 0) / ring.length; }
+    else return null;
+    const c = (e.categories && e.categories[0]) || {};
+    if (c.id === 'seaLakeIce' || c.id === 'waterColor') return null;
+    return {id: e.id, title: e.title, cat: c.id, catTitle: c.title || 'Event', t: Date.parse(g.date), lat, lon, url: (e.sources && e.sources[0] && e.sources[0].url) || e.link, mag: g.magnitudeValue, magU: g.magnitudeUnit};
+  }).filter(x => x && isFinite(x.lat));
+  G.eonet.clearLayers(); S.eonetMarkers.clear();
+  for (const v of S.eonet) {
+    v.dist = distMi(cfg.home, v);
+    const col = EONET_COLORS[v.cat] || '#fbbf24';
+    const m = L.circleMarker([v.lat, v.lon], {radius: 6, color: col, weight: 2, fillColor: col, fillOpacity: .35})
+      .bindPopup(`<div class="pop"><div class="pt"><span class="tag" style="background:${col}">${esc(v.catTitle)}</span></div><div style="font-weight:600;margin-top:4px">${esc(v.title)}</div>
+      <table class="kv"><tr><td>Last update</td><td>${ago(v.t)}</td></tr>${v.mag != null ? `<tr><td>Size</td><td>${fmtNum(v.mag)} ${esc(v.magU || '')}</td></tr>` : ''}<tr><td>From home</td><td>${fmtNum(v.dist)} mi</td></tr></table>
+      ${v.url ? `<div class="plinks"><a href="${esc(v.url)}" target="_blank" rel="noopener">Source</a></div>` : ''}</div>`).addTo(G.eonet);
+    S.eonetMarkers.set(v.id, m);
+  }
+  setStatus('eonet', true, {count: S.eonet.length, src: 'eonet.gsfc.nasa.gov'});
+}
+
+const SEV = {Extreme: '#dc2626', Severe: '#f97316', Moderate: '#facc15', Minor: '#60a5fa', Unknown: '#94a3b8'};
+async function loadNws() {
+  const st = (cfg.state || 'NE').toUpperCase();
+  const [area, point] = await Promise.all([
+    getJSON(`https://api.weather.gov/alerts/active?area=${encodeURIComponent(st)}`),
+    getJSON(`https://api.weather.gov/alerts/active?point=${cfg.home.lat.toFixed(4)},${cfg.home.lon.toFixed(4)}`).catch(() => ({features: []}))
+  ]);
+  const norm = f => ({id: f.properties.id || f.id, event: f.properties.event, headline: f.properties.headline, sev: f.properties.severity || 'Unknown', area: f.properties.areaDesc, t: Date.parse(f.properties.effective || f.properties.sent), ends: Date.parse(f.properties.ends || f.properties.expires), desc: f.properties.description, instr: f.properties.instruction, geom: f.geometry});
+  S.nws = (area.features || []).map(norm);
+  S.nwsHome = (point.features || []).map(norm);
+  const homeIds = new Set(S.nwsHome.map(a => a.id));
+  S.nws.forEach(a => a.home = homeIds.has(a.id));
+  G.nws.clearLayers(); S.nwsLayers.clear();
+  for (const a of S.nws) {
+    if (!a.geom) continue;
+    const col = SEV[a.sev] || SEV.Unknown;
+    const lyr = L.geoJSON(a.geom, {style: {color: col, weight: 1.5, fillColor: col, fillOpacity: .18}})
+      .bindPopup(`<div class="pop"><div class="pt"><span class="tag" style="background:${col}">${esc(a.sev)}</span>${esc(a.event)}</div><div class="pg">${esc(a.area)}</div><div class="pg" style="margin-top:4px">Until ${a.ends ? new Date(a.ends).toLocaleString([], {weekday: 'short', hour: 'numeric', minute: '2-digit'}) : '—'}</div></div>`).addTo(G.nws);
+    S.nwsLayers.set(a.id, lyr);
+  }
+  for (const a of S.nwsHome) {
+    if (S.primed.nws && !S.seen.nws.has(a.id) && /warning/i.test(a.event)) toast(`<b>${esc(a.event)}</b> for ${esc(cfg.home.label)}`, SEV[a.sev] || '#facc15');
+    S.seen.nws.add(a.id);
+  }
+  setStatus('nws', true, {count: S.nws.length, src: 'api.weather.gov'});
+}
+
+function linksFromHtml(html) {
+  const d = new DOMParser().parseFromString(html || '', 'text/html');
+  return $$('a', d).map(a => ({href: a.getAttribute('href') || '', text: (a.textContent || a.getAttribute('title') || '').trim()}))
+    .filter(x => /^https?:\/\//.test(x.href) && x.text).slice(0, 6);
+}
+async function loadWorld() {
+  const q = encodeURIComponent(cfg.worldQuery);
+  const d = await gdelt(`https://api.gdeltproject.org/api/v2/geo/geo?query=${q}&mode=PointData&format=GeoJSON&maxpoints=250`);
+  S.world = (d.features || []).map(f => {
+    const c = f.geometry && f.geometry.coordinates; if (!c) return null;
+    const p = f.properties || {};
+    return {name: p.name || 'Location', count: +p.count || 1, links: linksFromHtml(p.html), lat: c[1], lon: c[0]};
+  }).filter(x => x && isFinite(x.lat));
+  G.world.clearLayers(); S.worldMarkers = [];
+  for (const w of S.world) {
+    const m = L.circleMarker([w.lat, w.lon], {radius: Math.min(16, 4 + Math.log2(w.count + 1) * 2.2), color: '#a78bfa', weight: 1, fillColor: '#a78bfa', fillOpacity: .3})
+      .bindPopup(`<div class="pop"><div class="pt"><span class="tag" style="background:#a78bfa">${w.count} reports</span></div><div style="font-weight:600;margin-top:4px">${esc(w.name)}</div>
+      <div style="margin-top:6px">${w.links.map(l => `<div style="margin-bottom:4px"><a href="${esc(l.href)}" target="_blank" rel="noopener">${esc(l.text)}</a></div>`).join('') || '<span class="muted">No article links</span>'}</div></div>`, {maxWidth: 290}).addTo(G.world);
+    w.marker = m;
+  }
+  setStatus('world', true, {count: S.world.length, src: 'api.gdeltproject.org'});
+}
+
+async function loadNews() {
+  const mk = q => `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q + ' sourcecountry:US')}&mode=ArtList&format=json&maxrecords=40&sort=DateDesc`;
+  const parse = d => (d.articles || []).map(a => ({title: a.title, url: a.url, domain: a.domain, t: gdeltDate(a.seendate)}));
+  let err = null;
+  try { S.news.local = parse(await gdelt(mk(cfg.localQuery) + '&timespan=30d')); } catch (e) { err = e; }
+  try { S.news.state = parse(await gdelt(mk(cfg.stateQuery) + '&timespan=5d')); } catch (e) { err = err || e; }
+  if (err && !S.news.local.length && !S.news.state.length) throw err;
+  setStatus('news', true, {count: S.news.local.length + S.news.state.length, src: 'api.gdeltproject.org'});
+  renderNews();
+}
+function gdeltDate(s) {
+  const m = String(s || '').match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/);
+  return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
+}
+
+/* ============ FBI crime data ============ */
+const CDE = 'https://api.usa.gov/crime/fbi/cde';
+async function cdeGet(path, ttlDays) {
+  const ck = 'ow.cde:' + path;
+  const c = LS.get(ck);
+  if (c && Date.now() - c.at < ttlDays * 864e5) return c.d;
+  const sep = path.includes('?') ? '&' : '?';
+  let d;
+  try { d = await getJSON(`${CDE}${path}${sep}API_KEY=${encodeURIComponent(cfg.dataGovKey || 'DEMO_KEY')}`, {timeout: 30000}); }
+  catch (e) {
+    if (/429|RATE_LIMIT/i.test(e.message)) throw new Error('FBI demo-key limit reached. Add your free api.data.gov key in Settings.');
+    if (/403|API_KEY/i.test(e.message)) throw new Error('FBI API key was rejected. Check it in Settings.');
+    throw e;
+  }
+  LS.set(ck, {at: Date.now(), d});
+  return d;
+}
+function bucket(obj) {
+  const out = {};
+  if (!obj || typeof obj !== 'object') return out;
+  for (const [k, v] of Object.entries(obj)) {
+    const m = String(k).match(/(\d{4})/); if (!m || v == null || v === '') continue;
+    const n = Number(v); if (!isFinite(n)) continue;
+    const y = +m[1]; out[y] = out[y] || {sum: 0, n: 0, last: null};
+    out[y].sum += n; out[y].n++; out[y].last = n;
+  }
+  return out;
+}
+function parseSummarized(j) {
+  const res = {name: '', years: [], usRate: {}};
+  const act = j && j.offenses && j.offenses.actuals;
+  if (act && typeof act === 'object') {
+    const keys = Object.keys(act);
+    const isUS = k => /^united states/i.test(k);
+    const offK = keys.find(k => /offenses$/i.test(k) && !isUS(k));
+    const clrK = keys.find(k => /clearances$/i.test(k) && !isUS(k));
+    const usK = keys.find(k => /offenses$/i.test(k) && isUS(k));
+    res.name = offK ? offK.replace(/\s*offenses$/i, '') : '';
+    const off = bucket(act[offK]), clr = bucket(act[clrK]), us = bucket(act[usK]);
+    const pops = (j.populations && j.populations.population) || {};
+    const pk = Object.keys(pops).find(k => k === res.name) || Object.keys(pops).find(k => !isUS(k));
+    const usPk = Object.keys(pops).find(isUS);
+    const pop = bucket(pops[pk]), usPop = bucket(pops[usPk]);
+    for (const y of Object.keys(off).map(Number).sort((a, b) => a - b)) {
+      const p = pop[y] && pop[y].last;
+      res.years.push({y, count: Math.round(off[y].sum), months: off[y].n, cleared: clr[y] ? Math.round(clr[y].sum) : null, pop: p || null, rate: p ? off[y].sum / p * 1e5 : null});
+      if (us[y] && usPop[y] && usPop[y].last) res.usRate[y] = us[y].sum / usPop[y].last * 1e5;
+    }
+    return res;
+  }
+  const rows = Array.isArray(j) ? j : Array.isArray(j && j.results) ? j.results : Array.isArray(j && j.data) ? j.data : null;
+  if (rows) {
+    rows.forEach(r => {
+      const y = +(r.data_year || r.year); const c = +(r.actual ?? r.count ?? r.value);
+      if (y && isFinite(c)) res.years.push({y, count: c, months: 12, cleared: r.cleared ?? null, pop: r.population || null, rate: r.population ? c / r.population * 1e5 : null});
+    });
+    res.years.sort((a, b) => a.y - b.y);
+  }
+  return res;
+}
+async function summarized(sel, off) {
+  const y = new Date().getFullYear();
+  const base = sel.kind === 'state' ? `/summarized/state/${encodeURIComponent(sel.id)}/${off}` : `/summarized/agency/${encodeURIComponent(sel.id)}/${off}`;
+  const d = await cdeGet(`${base}?from=01-${y - 11}&to=12-${y - 1}`, 7);
+  const r = parseSummarized(d);
+  if (!r.years.length) throw new Error('No data reported for this agency in the FBI system.');
+  return r;
+}
+async function loadAgencies() {
+  const st = (cfg.state || 'NE').toUpperCase();
+  const d = await cdeGet(`/agency/byStateAbbr/${encodeURIComponent(st)}`, 30);
+  let rows = Array.isArray(d) ? d : Object.values(d || {}).flatMap(v => Array.isArray(v) ? v : []);
+  S.agencies = rows.filter(a => a && a.ori).map(a => ({ori: a.ori, name: a.agency_name || a.ori, type: a.agency_type_name || a.agency_type || '', county: a.counties || a.county_name || '', lat: +a.latitude, lon: +a.longitude}));
+  G.police.clearLayers(); S.policeMarkers.clear();
+  for (const a of S.agencies) {
+    if (!isFinite(a.lat) || !isFinite(a.lon) || (!a.lat && !a.lon)) continue;
+    const m = L.circleMarker([a.lat, a.lon], {radius: 5, color: '#2dd4bf', weight: 1.5, fillColor: '#2dd4bf', fillOpacity: .35})
+      .bindPopup(`<div class="pop"><div class="pt">${esc(a.name)}</div><div class="pg">${esc(a.type)}${a.county ? ' · ' + esc(a.county) + ' Co.' : ''} · ORI ${esc(a.ori)}</div>
+      <button class="btn pri" data-act="crime" data-ori="${esc(a.ori)}" data-name="${esc(a.name)}">Show crime numbers</button></div>`).addTo(G.police);
+    S.policeMarkers.set(a.ori, m);
+  }
+  setStatus('police', true, {count: S.agencies.length, src: 'api.usa.gov (FBI)'});
+}
+
+/* ============ scheduler ============ */
+const LOADERS = {
+  mil:   {fn: loadMil,   every: 30e3,   layer: true},
+  sqk:   {fn: loadSqk,   every: 60e3,   layer: true},
+  eq:    {fn: loadEq,    every: 300e3,  layer: true},
+  nws:   {fn: loadNws,   every: 300e3,  layer: true},
+  eonet: {fn: loadEonet, every: 1800e3, layer: true},
+  world: {fn: loadWorld, every: 900e3,  layer: true},
+  news:  {fn: loadNews,  every: 1800e3, layer: false},
+  police:{fn: loadAgencies, every: 0,   layer: true}
+};
+async function run(k, force) {
+  const L0 = LOADERS[k]; if (!L0 || S.running[k]) return;
+  if (L0.layer && !cfg.layers[k]) return;
+  if (!force && S.last[k] && (L0.every === 0 || Date.now() - S.last[k] < L0.every)) return;
+  if (!force && S.failAt[k] && Date.now() - S.failAt[k] < 90e3) return; // retry failed feeds after 90s
+  S.running[k] = true;
+  try { await L0.fn(); S.last[k] = Date.now(); S.primed[k] = true; S.failAt[k] = 0; }
+  catch (e) { console.warn(k, e); setStatus(k, false, {err: e.message || String(e)}); S.failAt[k] = Date.now(); }
+  finally { S.running[k] = false; renderAll(); }
+}
+function tick() { if (document.hidden) return; Object.keys(LOADERS).forEach(k => run(k)); }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+$('#btnRefresh').addEventListener('click', async () => {
+  const b = $('#btnRefresh'); b.classList.add('spin');
+  await Promise.all(Object.keys(LOADERS).filter(k => k !== 'police' && k !== 'world' && k !== 'news').map(k => run(k, true)));
+  b.classList.remove('spin');
+});
+
+/* ============ rendering ============ */
+let renderQueued = false;
+function renderAll() {
+  if (renderQueued) return; renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; renderPeek(); renderNear(); renderFeed(); if (S.tab === 'brief') renderBrief(); renderChips(); });
+}
+function nearList() { return S.milList.filter(a => a.dist <= cfg.radius).sort((a, b) => a.dist - b.dist); }
+function renderPeek() {
+  const near = nearList().length;
+  const sq = S.sqkList.length;
+  const home = S.nwsHome.length;
+  const maxQ = S.eq.reduce((m, q) => q.mag > (m ? m.mag : -9) ? q : m, null);
+  const bits = [];
+  if (S.last.mil) bits.push(`<b>${near}</b> military within ${cfg.radius} mi`);
+  if (S.last.nws) bits.push(home ? `<b style="color:#facc15">${home} weather alert${home > 1 ? 's' : ''} at home</b>` : 'No weather alerts at home');
+  if (S.last.sqk) bits.push(`<b>${sq}</b> emergency squawk${sq === 1 ? '' : 's'}`);
+  if (maxQ) bits.push(`Top quake <b>M${maxQ.mag.toFixed(1)}</b>`);
+  $('#peekline').innerHTML = bits.join('<span class="sep">·</span>') || 'Loading live feeds…';
+  $('#cNear').textContent = near;
+}
+function focus(lat, lon, marker, zoom) {
+  if (!map) return;
+  setSheet('peek');
+  map.flyTo([lat, lon], Math.max(map.getZoom(), zoom || 7), {duration: .8});
+  if (marker) setTimeout(() => { try { marker.openPopup(); } catch {} }, 850);
+}
+function milRow(a, i, src) {
+  return `<div class="row" data-src="${src}" data-i="${i}"><span class="dot" style="background:${a.cat.color}"></span><div class="main"><div class="t1">${esc(a.call || a.hex.toUpperCase())}${a.watch ? ' <span class="tag" style="background:#facc15">watch</span>' : ''}</div><div class="t2">${esc(a.desc || a.t || 'Unknown')} · ${esc(a.cat.label)}${a.op ? ' · ' + esc(a.op) : ''}</div></div><div class="side"><b>${Math.round(a.dist)} mi ${compass(a.brg)}</b>${fmtAlt(a.alt)}</div></div>`;
+}
+let nearCache = [];
+function renderNear() {
+  const el = $('#pane-near');
+  nearCache = nearList();
+  const sqNear = S.sqkList.filter(a => a.dist <= cfg.radius);
+  let h = '';
+  if (S.nwsHome.length) {
+    h += `<div class="sec">Weather alerts at ${esc(cfg.home.label)}</div>`;
+    h += S.nwsHome.map(a => `<div class="card alert" style="border-left-color:${SEV[a.sev] || '#facc15'}"><b>${esc(a.event)}</b><div class="small muted">${esc(a.headline || a.area)}</div>${a.instr ? `<div class="small" style="margin-top:6px">${esc(a.instr.slice(0, 260))}${a.instr.length > 260 ? '…' : ''}</div>` : ''}</div>`).join('');
+  }
+  if (sqNear.length) {
+    h += `<div class="sec">Emergencies near you</div>`;
+    h += sqNear.map((a, i) => `<div class="row" data-src="sqk" data-i="${S.sqkList.indexOf(a)}"><span class="dot" style="background:#ef4444"></span><div class="main"><div class="t1">${a.squawk} ${SQK[a.squawk]} — ${esc(a.call || a.hex.toUpperCase())}</div><div class="t2">${esc(a.desc)}</div></div><div class="side"><b>${Math.round(a.dist)} mi ${compass(a.brg)}</b>${fmtAlt(a.alt)}</div></div>`).join('');
+  }
+  h += `<div class="sec">Military aircraft within ${cfg.radius} mi<span class="r">${S.milSrc ? 'via ' + esc(S.milSrc) : ''}</span></div>`;
+  if (S.status.mil && !S.status.mil.ok && !S.milList.length) h += `<div class="empty">Couldn’t reach the aircraft feeds: ${esc(S.status.mil.err)}. Retrying shortly.</div>`;
+  else if (!S.last.mil) h += `<div class="empty">Loading aircraft…</div>`;
+  else if (!nearCache.length) h += `<div class="empty">Nothing military is broadcasting within ${cfg.radius} mi right now.</div>`;
+  else h += nearCache.map((a, i) => milRow(a, i, 'near')).join('');
+  if (S.milList.length) {
+    const c = {}; S.milList.forEach(a => c[a.cat.key] = (c[a.cat.key] || 0) + 1);
+    h += `<div class="sec">Worldwide right now · ${S.milList.length}</div><div class="catbar">${Object.values(CATS).filter(k => c[k.key]).map(k => `<span><i style="background:${k.color}"></i>${k.label} ${c[k.key]}</span>`).join('')}</div>`;
+    h += `<div class="hint" style="margin-top:8px">Only aircraft with their transponders on show up. Plenty of military flights turn them off.</div>`;
+  }
+  el.innerHTML = h;
+}
+function renderFeed() {
+  const it = [];
+  S.sqkList.forEach((a, i) => it.push({t: Date.now() - (a.seen || 0) * 1000, color: '#ef4444', title: `Squawk ${a.squawk} · ${SQK[a.squawk]} — ${a.call || a.hex.toUpperCase()}`, sub: `${a.desc} · ${fmtNum(a.dist)} mi ${compass(a.brg)}`, go: () => focus(a.lat, a.lon, S.sqkMarkers.get(a.hex), 7)}));
+  S.nws.forEach(a => it.push({t: a.t, color: SEV[a.sev] || '#facc15', title: a.event + (a.home ? ' — at home' : ''), sub: a.area, go: () => { const l = S.nwsLayers.get(a.id); if (l && map) { setSheet('peek'); map.flyToBounds(l.getBounds(), {maxZoom: 9, duration: .8}); setTimeout(() => l.openPopup(), 850); } }}));
+  S.eq.filter(q => q.mag >= 4 || q.dist < cfg.radius).forEach(q => it.push({t: q.t, color: '#f59e0b', title: `M${q.mag.toFixed(1)} earthquake`, sub: q.place, go: () => focus(q.lat, q.lon, S.eqMarkers.get(q.id), 6)}));
+  S.eonet.filter(v => Date.now() - v.t < 4 * 864e5).forEach(v => it.push({t: v.t, color: EONET_COLORS[v.cat] || '#fbbf24', title: v.title, sub: `${v.catTitle} · ${fmtNum(v.dist)} mi away`, go: () => focus(v.lat, v.lon, S.eonetMarkers.get(v.id), 6)}));
+  [...S.news.local.map(n => ({...n, scope: 'Local'})), ...S.news.state.map(n => ({...n, scope: 'Nebraska'}))].slice(0, 40)
+    .forEach(n => it.push({t: n.t, color: '#2dd4bf', title: n.title, sub: `${n.scope} crime news · ${n.domain}`, url: n.url}));
+  it.sort((a, b) => (b.t || 0) - (a.t || 0));
+  S.feed = it.slice(0, 120);
+  $('#cFeed').textContent = S.feed.length;
+  $('#pane-feed').innerHTML = S.feed.length ? S.feed.map((f, i) => f.url
+    ? `<a class="row" href="${esc(f.url)}" target="_blank" rel="noopener"><span class="dot" style="background:${f.color}"></span><div class="main"><div class="t1">${esc(f.title)}</div><div class="t2">${esc(f.sub)}</div></div><div class="side">${ago(f.t)}</div></a>`
+    : `<div class="row" data-src="feed" data-i="${i}"><span class="dot" style="background:${f.color}"></span><div class="main"><div class="t1">${esc(f.title)}</div><div class="t2">${esc(f.sub)}</div></div><div class="side">${ago(f.t)}</div></div>`).join('')
+    : '<div class="empty">Waiting for feeds…</div>';
+}
+document.addEventListener('click', e => {
+  const r = e.target.closest('.row[data-src]');
+  if (r) {
+    const i = +r.dataset.i, src = r.dataset.src;
+    if (src === 'near') { const a = nearCache[i]; if (a) focus(a.lat, a.lon, S.milMarkers.get(a.hex), 8); }
+    if (src === 'sqk') { const a = S.sqkList[i]; if (a) focus(a.lat, a.lon, S.sqkMarkers.get(a.hex), 7); }
+    if (src === 'feed') { const f = S.feed[i]; if (f && f.go) f.go(); }
+    return;
+  }
+  const act = e.target.closest('[data-act]');
+  if (act && act.dataset.act === 'crime') {
+    S.crimeSel = {kind: 'agency', id: act.dataset.ori, name: act.dataset.name};
+    if (map) map.closePopup();
+    showTab('crime'); setSheet('half');
+  }
+});
+
+/* ============ crime pane ============ */
+const CRIME_LINKS = [
+  ['Platte Co. jail roster', 'https://plattecounty.ne.gov/detention-center-roster/'],
+  ['Platte Co. Sheriff releases', 'https://plattecounty.ne.gov/sheriff/press-releases/'],
+  ['NE sex offender registry', 'https://sor.nebraska.gov/'],
+  ['SpotCrime Nebraska', 'https://spotcrime.com/NE'],
+  ['NE Crime Commission maps', 'https://ncc.nebraska.gov/node/79'],
+  ['FBI Crime Data Explorer', 'https://cde.ucr.cjis.gov/LATEST/webapp/#/pages/home'],
+  ['News: Columbus police', 'https://news.google.com/search?q=Columbus%20Nebraska%20police'],
+  ['News: Nebraska State Patrol', 'https://news.google.com/search?q=Nebraska%20State%20Patrol']
+];
+let crimeToken = 0;
+function crimePills() {
+  const st = (cfg.state || 'NE').toUpperCase();
+  const opts = [...cfg.agencies.map(a => ({kind: 'agency', id: a.ori, name: a.name})), {kind: 'state', id: st, name: st + ' statewide'}];
+  const cur = S.crimeSel;
+  if (cur && !opts.some(o => o.id === cur.id)) opts.push(cur);
+  return `<div class="pills">${opts.map(o => `<button class="pill ${cur && cur.id === o.id ? 'on' : ''}" data-csel='${esc(JSON.stringify(o))}'>${esc(o.name)}</button>`).join('')}</div>`;
+}
+function renderCrime() {
+  const el = $('#pane-crime');
+  el.innerHTML = `<div class="sec">Official crime numbers (FBI)</div>${crimePills()}
+    <input class="search" id="agSearch" placeholder="Find any ${esc((cfg.state || 'NE').toUpperCase())} police or sheriff agency…" autocomplete="off">
+    <div id="agResults"></div>
+    <div class="card" id="crimeCard"><div class="muted">Loading FBI data…</div></div>
+    <div class="sec">Recent crime &amp; police news</div>
+    <div class="pills"><button class="pill ${S.newsTab === 'local' ? 'on' : ''}" data-news="local">Local</button><button class="pill ${S.newsTab === 'state' ? 'on' : ''}" data-news="state">Statewide</button></div>
+    <div id="crimeNews"></div>
+    <div class="sec">Live local sources</div>
+    <div class="links">${CRIME_LINKS.map(([t, u]) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`).join('')}</div>
+    <div class="hint" style="margin-top:10px">Columbus and Platte County don’t publish a free live incident feed. FBI numbers are yearly and run about a year behind. The news tab fills in what’s happening now.</div>`;
+  renderNews();
+  loadCrimeCard();
+}
+function pctChange(a, b) { return b ? (a - b) / b * 100 : null; }
+function bars(years, color) {
+  const ys = years.filter(r => r.months >= 12).slice(-10);
+  if (ys.length < 2) return '';
+  const max = Math.max(...ys.map(r => r.count), 1), w = 100 / ys.length;
+  return `<svg class="bars" viewBox="0 0 100 40" preserveAspectRatio="none">${ys.map((r, i) => { const h = Math.max(.8, r.count / max * 37); return `<rect x="${(i * w + w * .14).toFixed(2)}" y="${(40 - h).toFixed(2)}" width="${(w * .72).toFixed(2)}" height="${h.toFixed(2)}" rx=".6" fill="${color}" opacity="${i === ys.length - 1 ? 1 : .5}"><title>${r.y}: ${r.count}</title></rect>`; }).join('')}</svg><div class="bars-x"><span>${ys[0].y}</span><span>${ys.length}-yr trend</span><span>${ys[ys.length - 1].y}</span></div>`;
+}
+function offenseBlock(label, r, stR, color) {
+  const full = r.years.filter(x => x.months >= 12 && x.count != null);
+  const last = full[full.length - 1], prev = full[full.length - 2];
+  if (!last) {
+    const any = r.years[r.years.length - 1];
+    return `<div class="ob"><div class="ob-h"><span class="lbl">${label}</span>${any ? `<span class="big">${fmtNum(any.count)}</span>` : ''}</div><div class="small muted">${any ? `${any.y}, partial year (${any.months} months reported)` : 'No data reported.'}</div></div>`;
+  }
+  const ch = prev ? pctChange(last.count, prev.count) : null;
+  const stRate = stR ? (stR.years.find(x => x.y === last.y) || {}).rate : null;
+  const usRate = r.usRate[last.y] || (stR && stR.usRate[last.y]);
+  const clr = last.cleared != null && last.count ? Math.round(last.cleared / last.count * 100) : null;
+  return `<div class="ob"><div class="ob-h"><span class="lbl">${label}</span>${ch != null ? `<span class="chg ${ch > 0 ? 'up' : 'dn'}">${ch > 0 ? '▲' : '▼'} ${Math.abs(ch).toFixed(0)}%</span>` : ''}<span class="big">${fmtNum(last.count)}</span></div>
+    <div class="small muted">${last.y} offenses${prev ? ` · ${fmtNum(prev.count)} in ${prev.y}` : ''}${clr != null ? ` · ${clr}% cleared` : ''}</div>
+    <div class="cmp"><div><small>Per 100k</small><b>${fmtNum(last.rate)}</b></div><div><small>${stR ? esc((cfg.state || '').toUpperCase()) : 'State'}</small><b>${fmtNum(stRate)}</b></div><div><small>U.S.</small><b>${fmtNum(usRate)}</b></div></div>
+    ${bars(r.years, color)}</div>`;
+}
+async function loadCrimeCard() {
+  const card = $('#crimeCard'); if (!card) return;
+  const sel = S.crimeSel, tok = ++crimeToken;
+  card.innerHTML = `<div class="muted">Loading ${esc(sel.name)}…</div>`;
+  try {
+    const [v, p] = await Promise.all([summarized(sel, 'V'), summarized(sel, 'P')]);
+    let sv = null, sp = null;
+    if (sel.kind !== 'state') {
+      const sx = {kind: 'state', id: (cfg.state || 'NE').toUpperCase()};
+      try { [sv, sp] = await Promise.all([summarized(sx, 'V'), summarized(sx, 'P')]); } catch {}
+    }
+    if (tok !== crimeToken) return;
+    S.crimeData[sel.id] = {sel, v, p, sv, sp};
+    const saved = cfg.agencies.some(a => a.ori === sel.id) || sel.kind === 'state';
+    card.innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b style="font-size:15px">${esc(v.name || sel.name)}</b><span class="spacer"></span>${saved ? '' : `<button class="btn" style="padding:6px 10px" data-save-ag>Save</button>`}</div>
+      ${offenseBlock('Violent crime', v, sv, '#ef4444')}${offenseBlock('Property crime', p, sp, '#f59e0b')}
+      <div class="hint">Violent = murder, rape, robbery, aggravated assault. Property = burglary, theft, vehicle theft, arson. Source: FBI Crime Data Explorer.</div>`;
+    setStatus('crime', true, {src: 'api.usa.gov (FBI)'});
+  } catch (e) {
+    if (tok !== crimeToken) return;
+    card.innerHTML = `<b>${esc(sel.name)}</b><div class="small muted" style="margin-top:6px">${esc(e.message)}</div><div class="btnrow"><button class="btn" data-retry-crime>Try again</button></div>`;
+    setStatus('crime', false, {err: e.message});
+  }
+}
+function renderNews() {
+  const el = $('#crimeNews'); if (!el) return;
+  const items = S.news[S.newsTab] || [];
+  const st = S.status.news;
+  el.innerHTML = items.length ? items.slice(0, 25).map(n => `<a class="row" href="${esc(n.url)}" target="_blank" rel="noopener"><span class="dot" style="background:#2dd4bf"></span><div class="main"><div class="t1">${esc(n.title)}</div><div class="t2">${esc(n.domain)}</div></div><div class="side">${ago(n.t)}</div></a>`).join('')
+    : `<div class="empty">${st && !st.ok ? 'News feed unavailable: ' + esc(st.err) : S.last.news ? 'No matching stories found. Try the news links below.' : 'Loading news…'}</div>`;
+}
+$('#pane-crime').addEventListener('click', e => {
+  const p = e.target.closest('[data-csel]');
+  if (p) { try { S.crimeSel = JSON.parse(p.dataset.csel); } catch {} renderCrime(); return; }
+  const n = e.target.closest('[data-news]');
+  if (n) { S.newsTab = n.dataset.news; $$('[data-news]').forEach(b => b.classList.toggle('on', b === n)); renderNews(); return; }
+  if (e.target.closest('[data-retry-crime]')) { loadCrimeCard(); return; }
+  if (e.target.closest('[data-save-ag]')) {
+    if (!cfg.agencies.some(a => a.ori === S.crimeSel.id)) { cfg.agencies.push({ori: S.crimeSel.id, name: S.crimeSel.name}); saveCfg(); }
+    renderCrime(); return;
+  }
+  const ag = e.target.closest('[data-ag]');
+  if (ag) { S.crimeSel = {kind: 'agency', id: ag.dataset.ag, name: ag.dataset.name}; renderCrime(); }
+});
+$('#pane-crime').addEventListener('input', async e => {
+  if (e.target.id !== 'agSearch') return;
+  const q = e.target.value.trim().toLowerCase();
+  const out = $('#agResults');
+  if (q.length < 2) { out.innerHTML = ''; return; }
+  if (!S.agencies) {
+    out.innerHTML = '<div class="small muted" style="padding:4px 2px 8px">Loading agency list…</div>';
+    try { await loadAgencies(); } catch (err) { out.innerHTML = `<div class="small muted">${esc(err.message)}</div>`; return; }
+  }
+  const hits = S.agencies.filter(a => a.name.toLowerCase().includes(q) || (a.county || '').toLowerCase().includes(q)).slice(0, 8);
+  out.innerHTML = hits.map(a => `<div class="row" data-ag="${esc(a.ori)}" data-name="${esc(a.name)}"><span class="dot" style="background:#2dd4bf"></span><div class="main"><div class="t1">${esc(a.name)}</div><div class="t2">${esc(a.type)}${a.county ? ' · ' + esc(a.county) : ''}</div></div></div>`).join('') || '<div class="small muted" style="padding:4px 2px 8px">No match.</div>';
+});
+
+/* ============ brief ============ */
+function briefFacts() {
+  const near = nearList();
+  const cats = {}; near.forEach(a => cats[a.cat.label] = (cats[a.cat.label] || 0) + 1);
+  const notable = near.filter(a => ['isr', 'bomber', 'command', 'tanker'].includes(a.cat.key)).slice(0, 6);
+  const quakes = [...S.eq].sort((a, b) => b.mag - a.mag).slice(0, 3);
+  const localQ = S.eq.filter(q => q.dist < cfg.radius);
+  const fires = S.eonet.filter(e => e.cat === 'wildfires');
+  const nearEvents = S.eonet.filter(e => e.dist < cfg.radius);
+  const storms = S.eonet.filter(e => e.cat === 'severeStorms');
+  const hot = [...S.world].sort((a, b) => b.count - a.count).slice(0, 6);
+  const crime = S.crimeData[cfg.agencies[0] && cfg.agencies[0].ori] || Object.values(S.crimeData)[0];
+  return {near, cats, notable, quakes, localQ, fires, nearEvents, storms, hot, crime};
+}
+function lastFull(r) { const f = r && r.years.filter(x => x.months >= 12); return f && f.length ? [f[f.length - 1], f[f.length - 2]] : [null, null]; }
+function briefText() {
+  const f = briefFacts(), L0 = [];
+  L0.push(`Situation brief for ${cfg.home.label} — ${new Date().toLocaleString()}`);
+  L0.push(`\nNEAR ME (${cfg.radius} mi):`);
+  L0.push(`- Military aircraft broadcasting: ${f.near.length}${f.near.length ? ' (' + Object.entries(f.cats).map(([k, v]) => `${v} ${k}`).join(', ') + ')' : ''}`);
+  f.notable.forEach(a => L0.push(`  • ${a.call || a.hex} ${a.desc || a.t} — ${Math.round(a.dist)} mi ${compass(a.brg)}, ${fmtAlt(a.alt)}`));
+  L0.push(`- Weather alerts at home: ${S.nwsHome.length ? S.nwsHome.map(a => a.event).join('; ') : 'none'}`);
+  L0.push(`- ${(cfg.state || '').toUpperCase()} weather alerts statewide: ${S.nws.length}${S.nws.length ? ' (' + [...new Set(S.nws.map(a => a.event))].slice(0, 6).join(', ') + ')' : ''}`);
+  if (f.localQ.length) L0.push(`- Earthquakes within radius (24h): ${f.localQ.map(q => 'M' + q.mag.toFixed(1) + ' ' + q.place).join('; ')}`);
+  if (f.nearEvents.length) L0.push(`- Fires/storms within radius: ${f.nearEvents.map(e => e.title).slice(0, 5).join('; ')}`);
+  L0.push(`\nWORLD:`);
+  L0.push(`- Military aircraft broadcasting worldwide: ${S.milList.length}`);
+  L0.push(`- Emergency squawks: ${S.sqkList.length ? S.sqkList.map(a => `${a.squawk} ${a.call || a.hex} (${a.desc}) ${fmtNum(a.dist)} mi away`).join('; ') : 'none'}`);
+  L0.push(`- Strongest quakes (24h): ${f.quakes.map(q => 'M' + q.mag.toFixed(1) + ' ' + q.place).join('; ') || 'none'}`);
+  L0.push(`- Open wildfires tracked by NASA: ${f.fires.length}; severe storms: ${f.storms.length}`);
+  if (f.hot.length) L0.push(`- Most-reported conflict/violence locations in news (24h): ${f.hot.map(w => `${w.name} (${w.count})`).join('; ')}`);
+  if (f.hot.length) f.hot.slice(0, 4).forEach(w => w.links.slice(0, 2).forEach(l => L0.push(`  • ${w.name}: ${l.text}`)));
+  if (f.crime) {
+    const [v, vp] = lastFull(f.crime.v), [p, pp] = lastFull(f.crime.p);
+    L0.push(`\nLOCAL CRIME (${f.crime.v.name || f.crime.sel.name}, FBI annual data):`);
+    if (v) L0.push(`- Violent: ${v.count} in ${v.y}${vp ? ` (was ${vp.count} in ${vp.y})` : ''}`);
+    if (p) L0.push(`- Property: ${p.count} in ${p.y}${pp ? ` (was ${pp.count} in ${pp.y})` : ''}`);
+  }
+  const news = [...S.news.local.slice(0, 6), ...S.news.state.slice(0, 4)];
+  if (news.length) { L0.push(`\nRECENT CRIME/POLICE HEADLINES:`); news.forEach(n => L0.push(`- ${n.title} (${n.domain}, ${ago(n.t)})`)); }
+  return L0.join('\n');
+}
+function renderBrief() {
+  const el = $('#pane-brief');
+  const keepAI = $('#aiOut') ? $('#aiOut').innerHTML : '';
+  const f = briefFacts();
+  const li = arr => arr.length ? `<ul>${arr.map(x => `<li>${x}</li>`).join('')}</ul>` : '<p class="muted">Nothing notable.</p>';
+  const nearL = [];
+  nearL.push(`<b>${f.near.length}</b> military aircraft broadcasting within ${cfg.radius} mi${f.near.length ? ': ' + esc(Object.entries(f.cats).map(([k, v]) => `${v} ${k}`).join(', ')) : ''}.`);
+  f.notable.forEach(a => nearL.push(`<b>${esc(a.call || a.hex)}</b> ${esc(a.desc || a.t)} — ${Math.round(a.dist)} mi ${compass(a.brg)}, ${fmtAlt(a.alt)}`));
+  nearL.push(S.nwsHome.length ? `<b style="color:#facc15">${esc(S.nwsHome.map(a => a.event).join(', '))}</b> in effect at home.` : 'No weather alerts at home.');
+  if (f.localQ.length) nearL.push(`${f.localQ.length} earthquake${f.localQ.length > 1 ? 's' : ''} within your radius today.`);
+  if (f.nearEvents.length) nearL.push(`Nearby: ${esc(f.nearEvents.slice(0, 3).map(e => e.title).join('; '))}.`);
+  const worldL = [];
+  if (S.sqkList.length) worldL.push(`<b style="color:#fca5a5">${S.sqkList.length} aircraft squawking emergency</b>: ${esc(S.sqkList.slice(0, 4).map(a => `${a.call || a.hex} (${SQK[a.squawk]})`).join(', '))}.`);
+  if (f.quakes[0]) worldL.push(`Strongest quake: <b>M${f.quakes[0].mag.toFixed(1)}</b> ${esc(f.quakes[0].place)} (${ago(f.quakes[0].t)}).`);
+  if (f.hot.length) worldL.push(`Most-reported violence in the news: ${esc(f.hot.slice(0, 5).map(w => w.name.split(',')[0]).join(', '))}.`);
+  const pl = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  worldL.push(`${S.milList.length} military aircraft visible worldwide · ${pl(f.fires.length, 'open wildfire')} · ${pl(f.storms.length, 'severe storm')}.`);
+  const crimeL = [];
+  if (f.crime) {
+    const [v, vp] = lastFull(f.crime.v), [p, pp] = lastFull(f.crime.p);
+    const nm = esc(f.crime.v.name || f.crime.sel.name);
+    if (v) crimeL.push(`${nm}: <b>${v.count}</b> violent crimes in ${v.y}${vp ? ` (${pctChange(v.count, vp.count) > 0 ? 'up' : 'down'} from ${vp.count})` : ''}.`);
+    if (p) crimeL.push(`<b>${p.count}</b> property crimes in ${p.y}${pp ? ` (${pctChange(p.count, pp.count) > 0 ? 'up' : 'down'} from ${pp.count})` : ''}.`);
+  } else crimeL.push('Open the Crime tab once to load the FBI numbers.');
+  S.news.local.slice(0, 3).forEach(n => crimeL.push(`<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a> <span class="muted">${ago(n.t)}</span>`));
+  el.innerHTML = `<div class="brief">
+    <h4>Near you</h4>${li(nearL)}
+    <h4>World</h4>${li(worldL)}
+    <h4>Local crime</h4>${li(crimeL)}
+    <div class="btnrow"><button class="btn pri" id="btnCopy">Copy for Claude</button><a class="btn" href="https://claude.ai/new" target="_blank" rel="noopener">Open Claude</a>${cfg.aiKey ? '<button class="btn" id="btnAI">Write AI brief</button>' : ''}</div>
+    <div class="hint">“Copy for Claude” copies all the live numbers above with a briefing request. Paste it into Claude for a written analysis.</div>
+    <div id="aiOut" class="card" style="margin-top:10px;${keepAI ? '' : 'display:none'}">${keepAI}</div></div>`;
+}
+const PROMPT_HEAD = 'You are my personal situational-awareness analyst. Using ONLY the live data below, write a short plain-English brief: (1) the 3 things that matter most to me today, (2) anything unusual near my home, (3) world picture in 3-4 bullets, (4) local crime notes. Note where the data is thin, and don’t speculate beyond it. Keep it under 250 words.\n\n';
+$('#pane-brief').addEventListener('click', async e => {
+  if (e.target.id === 'btnCopy') {
+    const txt = PROMPT_HEAD + briefText();
+    try { await navigator.clipboard.writeText(txt); e.target.textContent = 'Copied ✓'; }
+    catch { const out = $('#aiOut'); out.style.display = ''; out.textContent = txt; e.target.textContent = 'Copy the text below'; }
+    setTimeout(() => { if (e.target.isConnected) e.target.textContent = 'Copy for Claude'; }, 2500);
+  }
+  if (e.target.id === 'btnAI') {
+    const out = $('#aiOut'); out.style.display = ''; out.textContent = 'Writing brief…';
+    try {
+      const d = await getJSON('https://api.anthropic.com/v1/messages', {method: 'POST', timeout: 60000, headers: {'content-type': 'application/json', 'x-api-key': cfg.aiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true'}, body: JSON.stringify({model: cfg.model || DEFAULTS.model, max_tokens: 900, messages: [{role: 'user', content: PROMPT_HEAD + briefText()}]})});
+      out.textContent = (d.content || []).map(c => c.text || '').join('\n').trim() || 'No text returned.';
+    } catch (err) { out.textContent = 'AI brief failed: ' + err.message; }
+  }
+});
+
+/* ============ sheet & tabs ============ */
+function setSheet(s) { $('#sheet').dataset.state = s; }
+function showTab(t) {
+  S.tab = t;
+  $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  $$('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + t));
+  if (t === 'crime') { renderCrime(); if (!S.last.news) run('news'); }
+  if (t === 'brief') renderBrief();
+}
+$('#tabs').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const sheet = $('#sheet');
+  if (b.dataset.tab === S.tab) setSheet(sheet.dataset.state === 'peek' ? 'half' : 'peek');
+  else { showTab(b.dataset.tab); if (sheet.dataset.state === 'peek') setSheet('half'); }
+});
+$('#grab').addEventListener('click', () => { const s = $('#sheet').dataset.state; setSheet(s === 'peek' ? 'half' : s === 'half' ? 'full' : 'peek'); });
+(() => {
+  let y0 = null;
+  const zone = $('#grab');
+  zone.addEventListener('touchstart', e => { y0 = e.touches[0].clientY; }, {passive: true});
+  zone.addEventListener('touchend', e => {
+    if (y0 == null) return; const dy = e.changedTouches[0].clientY - y0; y0 = null;
+    if (Math.abs(dy) < 30) return;
+    const order = ['peek', 'half', 'full']; const i = order.indexOf($('#sheet').dataset.state);
+    setSheet(order[Math.max(0, Math.min(2, i + (dy < 0 ? 1 : -1)))]);
+  });
+})();
+$('#btnHome').addEventListener('click', () => map && map.flyTo([cfg.home.lat, cfg.home.lon], 6, {duration: .8}));
+$('#btnWorld').addEventListener('click', () => map && map.flyTo([25, -40], 2, {duration: .8}));
+
+/* ============ settings ============ */
+function openSettings() {
+  $('#sLabel').value = cfg.home.label; $('#sLat').value = cfg.home.lat; $('#sLon').value = cfg.home.lon;
+  $('#sRadius').value = cfg.radius; $('#sState').value = cfg.state; $('#sWatch').value = cfg.watch;
+  $('#sAgencies').value = cfg.agencies.map(a => `${a.ori} = ${a.name}`).join('\n');
+  $('#sKey').value = cfg.dataGovKey; $('#sAI').value = cfg.aiKey; $('#sModel').value = cfg.model;
+  $('#sWorldQ').value = cfg.worldQuery; $('#sLocalQ').value = cfg.localQuery; $('#sStateQ').value = cfg.stateQuery;
+  renderSources();
+  $('#settings').hidden = false;
+}
+$('#btnSettings').addEventListener('click', openSettings);
+$('#btnCloseSet').addEventListener('click', () => $('#settings').hidden = true);
+$('#settings').addEventListener('click', e => { if (e.target.id === 'settings') $('#settings').hidden = true; });
+$('#btnGeo').addEventListener('click', () => {
+  const b = $('#btnGeo');
+  if (!navigator.geolocation) { b.textContent = 'Location not available'; return; }
+  b.textContent = 'Locating…';
+  navigator.geolocation.getCurrentPosition(p => {
+    $('#sLat').value = p.coords.latitude.toFixed(4); $('#sLon').value = p.coords.longitude.toFixed(4);
+    if ($('#sLabel').value === cfg.home.label) $('#sLabel').value = 'My location';
+    b.textContent = 'Got it. Tap Save';
+  }, err => { b.textContent = 'Couldn’t get location: ' + err.message; }, {enableHighAccuracy: false, timeout: 15000});
+});
+$('#btnSave').addEventListener('click', () => {
+  const old = JSON.stringify([cfg.home, cfg.radius, cfg.state, cfg.worldQuery, cfg.localQuery, cfg.stateQuery, cfg.watch]);
+  const lat = parseFloat($('#sLat').value), lon = parseFloat($('#sLon').value);
+  if (isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) cfg.home = {lat, lon, label: $('#sLabel').value.trim() || 'Home'};
+  const r = parseInt($('#sRadius').value, 10); if (r > 0) cfg.radius = Math.min(r, 3000);
+  const st = $('#sState').value.trim().toUpperCase(); if (/^[A-Z]{2}$/.test(st)) cfg.state = st;
+  cfg.watch = $('#sWatch').value.trim();
+  const ags = $('#sAgencies').value.split('\n').map(l => l.split('=')).filter(p => p[0] && p[0].trim()).map(p => ({ori: p[0].trim().toUpperCase(), name: (p[1] || p[0]).trim()}));
+  if (ags.length) cfg.agencies = ags;
+  cfg.dataGovKey = $('#sKey').value.trim(); cfg.aiKey = $('#sAI').value.trim(); cfg.model = $('#sModel').value.trim() || DEFAULTS.model;
+  cfg.worldQuery = $('#sWorldQ').value.trim() || DEFAULTS.worldQuery; cfg.localQuery = $('#sLocalQ').value.trim() || DEFAULTS.localQuery; cfg.stateQuery = $('#sStateQ').value.trim() || DEFAULTS.stateQuery;
+  saveCfg();
+  $('#settings').hidden = true;
+  const changed = old !== JSON.stringify([cfg.home, cfg.radius, cfg.state, cfg.worldQuery, cfg.localQuery, cfg.stateQuery, cfg.watch]);
+  if (changed) {
+    drawHome();
+    S.agencies = null; G.police.clearLayers();
+    ['mil', 'sqk', 'eq', 'nws', 'eonet', 'world', 'news', 'police'].forEach(k => run(k, true));
+    if (map) map.flyTo([cfg.home.lat, cfg.home.lon], 6, {duration: .8});
+  }
+  if (S.tab === 'crime') renderCrime();
+  renderAll();
+});
+$('#btnClear').addEventListener('click', () => {
+  LS.keys().filter(k => k.startsWith('ow.cde:')).forEach(k => LS.del(k));
+  $('#btnClear').textContent = 'Cleared ✓';
+});
+$('#btnReset').addEventListener('click', () => {
+  const b = $('#btnReset');
+  if (b.dataset.confirm !== '1') { b.dataset.confirm = '1'; b.textContent = 'Tap again to reset'; return; }
+  LS.del('ow.cfg'); location.reload();
+});
+
+/* ============ boot ============ */
+if (initMap()) {
+  renderChips(); renderAll();
+  // stagger first loads so the phone isn't hit all at once
+  run('mil'); run('nws'); run('sqk');
+  setTimeout(() => run('eq'), 600);
+  setTimeout(() => run('eonet'), 1200);
+  setTimeout(() => run('world'), 300);
+  setTimeout(() => run('news'), 900);
+  if (cfg.layers.police) setTimeout(() => run('police'), 2000);
+  setInterval(tick, 5000);
+  setInterval(() => { renderLive(); if (S.tab === 'feed') renderFeed(); }, 30000);
+}
+</script>
+</body>
+</html>
