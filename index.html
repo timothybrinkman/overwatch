@@ -335,13 +335,18 @@ async function firstOk(urls, opts) {
 }
 // Feeds that refuse direct browser requests go through the user's own relay (Cloudflare Worker).
 const NEEDS_RELAY = 'This feed blocks web pages. Set up the free relay in Settings.';
+const BLOCKS_CLOUD = 'The flight-data services block shared cloud relays like Cloudflare’s. Aircraft need a home relay (see README).';
 const relayBase = () => (cfg.relay || '').trim().replace(/\/+$/, '');
 const relayUrl = u => relayBase() ? `${relayBase()}/?url=${encodeURIComponent(u)}` : null;
 const realSource = u => { try { const q = new URL(u).searchParams.get('url'); return q ? host(q) + ' via relay' : host(u); } catch { return host(u); } };
 async function viaRelay(urls) {
   const list = relayBase() ? urls.map(relayUrl).concat(urls) : urls;
   try { const r = await firstOk(list); r.src = realSource(r.url); return r; }
-  catch (e) { if (!relayBase()) throw new Error(NEEDS_RELAY); throw new Error('Relay couldn’t reach the feeds: ' + e.message); }
+  catch (e) {
+    if (!relayBase()) throw new Error(NEEDS_RELAY);
+    if (/HTTP (403|429)/.test(e.message)) throw new Error(BLOCKS_CLOUD);
+    throw new Error('Relay couldn’t reach the feeds: ' + e.message);
+  }
 }
 // GDELT asks for at most one request every 5 seconds, and its servers drop requests often,
 // so requests are queued, spaced 6 s apart and retried (alternating relay/direct when a relay is set).
@@ -794,22 +799,7 @@ async function loadWorld() {
   }
 }
 async function loadWorldFresh() {
-  const q = encodeURIComponent(cfg.worldQuery);
-  if (relayBase()) {
-    try {
-      const d = await gdelt(relayUrl(`https://api.gdeltproject.org/api/v2/geo/geo?query=${q}&mode=PointData&format=GeoJSON&maxpoints=250`), 1);
-      const pts = (d.features || []).map(f => {
-        const c = f.geometry && f.geometry.coordinates; if (!c) return null;
-        const p = f.properties || {};
-        return {name: p.name || 'Location', count: +p.count || 1, links: linksFromHtml(p.html), lat: c[1], lon: c[0]};
-      }).filter(x => x && isFinite(x.lat));
-      if (pts.length) {
-        S.world = pts; renderWorld(); worldCacheSave('GDELT map via relay');
-        setStatus('world', true, {count: S.world.length, src: 'GDELT map via relay'});
-        return;
-      }
-    } catch (e) { console.warn('GDELT map via relay failed, using headlines', e); }
-  }
+  // GDELT's map (GEO) API now answers 404, so places are worked out from the last day's English headlines.
   // Works without the relay: pull the last day's English headlines and place them by the country or city they name.
   const docUrl = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(cfg.worldQuery + ' sourcelang:english')}&mode=ArtList&format=json&maxrecords=250&sort=DateDesc&timespan=24h`;
   const d = await gdelt([docUrl, relayUrl(docUrl)]);
@@ -1014,6 +1004,7 @@ function renderNear() {
   }
   h += `<div class="sec">Military aircraft within ${cfg.radius} mi<span class="r">${S.milSrc ? 'via ' + esc(S.milSrc) : ''}</span></div>`;
   if (S.status.mil && !S.status.mil.ok && !S.milList.length && S.status.mil.err === NEEDS_RELAY) h += `<div class="card" style="border-left:3px solid var(--blue)"><b>One-time setup needed for aircraft</b><div class="small muted" style="margin-top:4px">The military-flight and emergency-squawk feeds don’t let web pages read them directly. A free relay on your own Cloudflare account fixes that. It takes about 5 minutes and you only do it once.</div><div class="btnrow"><a class="btn pri" href="https://github.com/timothybrinkman/overwatch#relay-setup" target="_blank" rel="noopener">Setup steps</a><button class="btn" data-open-settings>Enter relay URL</button></div></div>`;
+  else if (S.status.mil && !S.status.mil.ok && !S.milList.length && S.status.mil.err === BLOCKS_CLOUD) h += `<div class="card" style="border-left:3px solid var(--blue)"><b>Aircraft need a home relay</b><div class="small muted" style="margin-top:4px">Your Cloudflare relay works for news, but adsb.lol, airplanes.live and adsb.fi block shared cloud servers. Requests from a home internet connection are allowed, so running the relay on your home PC or server fixes this.</div><div class="btnrow"><a class="btn pri" href="https://github.com/timothybrinkman/overwatch#home-relay" target="_blank" rel="noopener">Home relay steps</a></div></div>`;
   else if (S.status.mil && !S.status.mil.ok && !S.milList.length) h += `<div class="empty">Couldn’t reach the aircraft feeds: ${esc(S.status.mil.err)}. Retrying shortly.</div>`;
   else if (!S.last.mil) h += `<div class="empty">Loading aircraft…</div>`;
   else if (!nearCache.length) h += `<div class="empty">Nothing military is broadcasting within ${cfg.radius} mi right now.</div>`;
