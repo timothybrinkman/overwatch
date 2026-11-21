@@ -343,18 +343,27 @@ async function viaRelay(urls) {
   try { const r = await firstOk(list); r.src = realSource(r.url); return r; }
   catch (e) { if (!relayBase()) throw new Error(NEEDS_RELAY); throw new Error('Relay couldn’t reach the feeds: ' + e.message); }
 }
-// GDELT asks for at most one request every 5 seconds
+// GDELT asks for at most one request every 5 seconds, and its servers drop requests often,
+// so requests are queued, spaced 6 s apart and retried (alternating relay/direct when a relay is set).
 let gChain = Promise.resolve(), gLast = 0;
-function gdelt(url) {
+function gdelt(urls, tries = 3) {
+  urls = [].concat(urls).filter(Boolean);
   const p = gChain.then(async () => {
-    const wait = gLast + 5600 - Date.now();
-    if (wait > 0) await sleep(wait);
-    gLast = Date.now();
-    return getJSON(url, {timeout: 25000});
+    let last;
+    for (let i = 0; i < tries; i++) {
+      const wait = gLast + 6000 - Date.now();
+      if (wait > 0) await sleep(wait);
+      gLast = Date.now();
+      try { return await getJSON(urls[i % urls.length], {timeout: 25000}); } catch (e) { last = e; }
+    }
+    throw new Error(`GDELT didn’t answer after ${tries} tries (${last ? last.message : 'no response'})`);
   });
   gChain = p.catch(() => {});
   return p;
 }
+// Last good copy of slow, flaky feeds, so the map isn't empty while GDELT is down
+const saveCache = (k, data) => LS.set('ow.cache.' + k, {at: Date.now(), data});
+const readCache = (k, maxAge) => { const c = LS.get('ow.cache.' + k); return c && c.data && Date.now() - c.at < maxAge ? c : null; };
 
 /* ============ config ============ */
 const DEFAULTS = {
@@ -772,37 +781,56 @@ function renderWorld() {
     w.marker = m;
   }
 }
+function worldCacheSave(src) {
+  saveCache('world', {src, pts: S.world.map(w => ({name: w.name, count: w.count, links: w.links, lat: w.lat, lon: w.lon, approx: !!w.approx}))});
+}
 async function loadWorld() {
+  try { await loadWorldFresh(); }
+  catch (e) {
+    const c = readCache('world', 3 * 864e5);
+    if (c && !S.world.length) { S.world = c.data.pts; renderWorld(); }
+    if (c) throw new Error(`${e.message}. Showing the copy from ${ago(c.at)}.`);
+    throw e;
+  }
+}
+async function loadWorldFresh() {
   const q = encodeURIComponent(cfg.worldQuery);
   if (relayBase()) {
     try {
-      const d = await gdelt(relayUrl(`https://api.gdeltproject.org/api/v2/geo/geo?query=${q}&mode=PointData&format=GeoJSON&maxpoints=250`));
+      const d = await gdelt(relayUrl(`https://api.gdeltproject.org/api/v2/geo/geo?query=${q}&mode=PointData&format=GeoJSON&maxpoints=250`), 1);
       const pts = (d.features || []).map(f => {
         const c = f.geometry && f.geometry.coordinates; if (!c) return null;
         const p = f.properties || {};
         return {name: p.name || 'Location', count: +p.count || 1, links: linksFromHtml(p.html), lat: c[1], lon: c[0]};
       }).filter(x => x && isFinite(x.lat));
       if (pts.length) {
-        S.world = pts; renderWorld();
+        S.world = pts; renderWorld(); worldCacheSave('GDELT map via relay');
         setStatus('world', true, {count: S.world.length, src: 'GDELT map via relay'});
         return;
       }
     } catch (e) { console.warn('GDELT map via relay failed, using headlines', e); }
   }
   // Works without the relay: pull the last day's English headlines and place them by the country or city they name.
-  const d = await gdelt(`https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(cfg.worldQuery + ' sourcelang:english')}&mode=ArtList&format=json&maxrecords=250&sort=DateDesc&timespan=24h`);
+  const docUrl = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(cfg.worldQuery + ' sourcelang:english')}&mode=ArtList&format=json&maxrecords=250&sort=DateDesc&timespan=24h`;
+  const d = await gdelt([docUrl, relayUrl(docUrl)]);
   S.world = geocodeHeadlines(d.articles || []);
-  renderWorld();
+  renderWorld(); worldCacheSave('GDELT headlines');
   setStatus('world', true, {count: S.world.length, src: 'GDELT headlines (approximate locations)'});
 }
 
 async function loadNews() {
   const mk = q => `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q + ' sourcecountry:US')}&mode=ArtList&format=json&maxrecords=40&sort=DateDesc`;
   const parse = d => (d.articles || []).map(a => ({title: a.title, url: a.url, domain: a.domain, t: gdeltDate(a.seendate)}));
-  let err = null;
-  try { S.news.local = parse(await gdelt(mk(cfg.localQuery) + '&timespan=30d')); } catch (e) { err = e; }
-  try { S.news.state = parse(await gdelt(mk(cfg.stateQuery) + '&timespan=5d')); } catch (e) { err = err || e; }
-  if (err && !S.news.local.length && !S.news.state.length) throw err;
+  let err = null, gotLocal = false, gotState = false;
+  const lu = mk(cfg.localQuery) + '&timespan=30d', su = mk(cfg.stateQuery) + '&timespan=5d';
+  try { S.news.local = parse(await gdelt([lu, relayUrl(lu)])); gotLocal = true; } catch (e) { err = e; }
+  try { S.news.state = parse(await gdelt([su, relayUrl(su)])); gotState = true; } catch (e) { err = err || e; }
+  if (gotLocal || gotState) saveCache('news', {local: S.news.local, state: S.news.state});
+  if (!gotLocal && !gotState) {
+    const c = readCache('news', 7 * 864e5);
+    if (c) { if (!S.news.local.length && !S.news.state.length) { S.news.local = c.data.local || []; S.news.state = c.data.state || []; } renderNews(); throw new Error(`${err.message}. Showing the copy from ${ago(c.at)}.`); }
+    throw err;
+  }
   setStatus('news', true, {count: S.news.local.length + S.news.state.length, src: 'api.gdeltproject.org'});
   renderNews();
 }
@@ -883,7 +911,8 @@ function parseSummarized(j) {
 async function summarized(sel, off) {
   const y = new Date().getFullYear();
   const base = sel.kind === 'state' ? `/summarized/state/${encodeURIComponent(sel.id)}/${off}` : `/summarized/agency/${encodeURIComponent(sel.id)}/${off}`;
-  const d = await cdeGet(`${base}?from=01-${y - 11}&to=12-${y - 1}`, 7);
+  const mm = String(new Date().getMonth() + 1).padStart(2, '0');
+  const d = await cdeGet(`${base}?from=01-${y - 11}&to=${mm}-${y}`, 7);
   const r = parseSummarized(d);
   if (!r.years.length) throw new Error('No data reported for this agency in the FBI system.');
   return r;
@@ -1348,6 +1377,9 @@ $('#btnReset').addEventListener('click', () => {
 
 /* ============ boot ============ */
 if (initMap()) {
+  // show the last good world map and news right away while fresh copies load
+  const wc = readCache('world', 3 * 864e5); if (wc) { S.world = wc.data.pts || []; renderWorld(); }
+  const nc = readCache('news', 7 * 864e5); if (nc) { S.news.local = nc.data.local || []; S.news.state = nc.data.state || []; }
   renderChips(); renderAll();
   // stagger first loads so the phone isn't hit all at once
   run('mil'); run('nws'); run('sqk');
