@@ -65,10 +65,20 @@ export default {
     }
 
     try {
-      const upstream = await fetch(url.toString(), {
+      const get = () => fetch(url.toString(), {
         headers: { 'User-Agent': UA, 'Accept': 'application/json, */*' },
         redirect: 'follow',
       });
+      let upstream = await get();
+      // GDELT often answers with a busy/rate-limit page instead of JSON. Wait and retry a couple of times.
+      if (url.hostname === 'api.gdeltproject.org') {
+        for (let i = 0; i < 2; i++) {
+          const type = upstream.headers.get('content-type') || '';
+          if (upstream.ok && /json/i.test(type)) break;
+          await new Promise(r => setTimeout(r, 5500));
+          upstream = await get();
+        }
+      }
       const headers = new Headers(cors);
       headers.set('content-type', upstream.headers.get('content-type') || 'application/json');
       headers.set('cache-control', 'no-store');
